@@ -12,8 +12,8 @@ const STD: ToolType[] = ['DIE_TOP', 'BOTTOM', 'FACING_PUNCH', 'SHORT_PIN'];
 // Detail boxes per tool: each inner array is one line
 const LAYOUT: Record<string, [keyof Rec, string][][]> = {
   DIE_TOP: [[['code', 'Batta no.']]],
-  BOTTOM: [[['od', 'OD'], ['len', 'L']], [['od2', 'OD']], [['step', 'Step']]],
-  FACING_PUNCH: [[['od', 'OD'], ['len', 'L']]], SHORT_PIN: [] };
+  BOTTOM: [[['od', 'OD'], ['len', 'L (length)']], [['od2', 'OD (2nd)']], [['step', 'Step']]],
+  FACING_PUNCH: [[['od', 'OD'], ['len', 'L (length)']]], SHORT_PIN: [] };
 const ST: Record<string, string> = { QUEUED: 'Queued', ON_LATHE: 'On lathe', IN_TRANSIT: 'Ready to dispatch', RECEIVED: 'Received', HEAT_TREAT: 'Heat treat', READY: 'Ready' };
 const ACTIVE = ['QUEUED', 'ON_LATHE', 'IN_TRANSIT'];
 const COLS = [['QUEUED', 'Queued', 'border-slate-500'], ['ON_LATHE', 'On lathe (10 km)', 'border-blue-500'],
@@ -22,6 +22,7 @@ const num = (s?: string) => (s ? parseFloat(s) : null);
 const big = 'rounded-2xl border-2 text-2xl font-bold p-4 transition-colors';
 const on = 'border-amber-400 bg-amber-400/20', off = 'border-slate-700 bg-slate-900';
 const inp = 'h-14 rounded-xl bg-slate-900 border-2 border-slate-700 px-3 text-xl w-full';
+const Lbl = ({ t, children }: { t: string; children: React.ReactNode }) => (<label className="block"><span className="block text-sm font-semibold text-slate-300 mb-1">{t}</span>{children}</label>);
 const tname = (o: OrderFull) => (o.tooling ? `${TOOL_LABEL[o.tooling.tool_type]} ${o.tooling.batta_code ?? ''}` : o.custom_tool_name || 'Other tool');
 const det = (k: ToolingMaster) => k.tool_type === 'DIE_TOP' ? (k.batta_code ? `Batta ${k.batta_code}` : '')
   : k.tool_type === 'BOTTOM' ? `OD ${k.od_dim ?? '—'} × L ${k.length_dim ?? '—'} · OD ${k.od2_dim ?? '—'} · Step ${k.step_depth_dim ?? '—'}`
@@ -113,6 +114,7 @@ function Kiosk() {
     setTf(t); setFname(roller?.roller_size ?? ''); setDrg(roller?.customer_drg ?? ''); setParty(roller?.party_name ?? ''); setForm(true);
   }
   const setF = (t: string, k: keyof Rec, v: string) => setTf({ ...tf, [t]: { ...(tf[t] ?? { code: '', od: '', len: '', od2: '', step: '' }), [k]: v } });
+
   async function saveForm() {
     if (!fname.trim()) return alert('Enter roller size');
     const rec = { roller_size: fname.trim(), customer_drg: drg.trim() || null, party_name: party.trim() || null };
@@ -180,7 +182,7 @@ function Kiosk() {
           <button onClick={addMachine} className="px-8 rounded-xl bg-green-600 text-xl font-bold">Save</button></div>}</section>
 
       {mid && <section><h2 className="text-lg text-slate-400 mb-2">2. Roller size</h2>
-        <input className={inp} placeholder="Type a size or pick below" value={q} onChange={e => { setQ(e.target.value); setForm(false); }}/>
+        <Lbl t="Roller size: type, or pick below"><input className={inp} placeholder="e.g. 31309" value={q} onChange={e => { setQ(e.target.value); setForm(false); }}/></Lbl>
         <div className="flex flex-wrap gap-2 mt-3">
           {shown.map(r => <button key={r.id} onClick={() => { setRid(r.id); setQ(''); setForm(false); reset(); }} className={`${big} py-3 px-6 ${rid === r.id && !qq ? on : off}`}>{r.roller_size}</button>)}
           {canNew && <button onClick={openNew} className={`${big} py-3 px-6 border-green-500 bg-green-600/20`}>➕ New size “{q.trim()}”</button>}</div>
@@ -192,20 +194,21 @@ function Kiosk() {
             return <div key={t}>{TOOL_LABEL[t]}: {k ? det(k) || '—' : <span className="text-slate-500">not added</span>}</div>; })}</div></div>}
         {form && <div className="mt-3 bg-slate-900 rounded-xl p-4 border-2 border-green-600 space-y-3">
           <div className="text-xl font-bold">{rid ? 'Edit roller details' : 'New roller size: enter details'}</div>
-          <div className="grid md:grid-cols-3 gap-2"><input className={inp} placeholder="Roller size" value={fname} onChange={e => setFname(e.target.value)}/>
-            <input className={inp} placeholder="Drawing no." value={drg} onChange={e => setDrg(e.target.value)}/>
-            <input className={inp} placeholder="Party name" value={party} onChange={e => setParty(e.target.value)}/></div>
+          <div className="grid md:grid-cols-3 gap-2">
+            <Lbl t="Roller size"><input className={inp} value={fname} onChange={e => setFname(e.target.value)}/></Lbl>
+            <Lbl t="Drawing no."><input className={inp} value={drg} onChange={e => setDrg(e.target.value)}/></Lbl>
+            <Lbl t="Party name"><input className={inp} value={party} onChange={e => setParty(e.target.value)}/></Lbl></div>
           {STD.map(t => <div key={t} className="rounded-xl border border-slate-700 p-3"><div className="mb-2 font-semibold text-lg">{TOOL_LABEL[t]}</div>
             {LAYOUT[t].map((row, i) => <div key={i} className={`grid gap-2 mb-2 ${row.length > 1 ? 'grid-cols-2' : 'grid-cols-1'}`}>{row.map(([k, p]) =>
-              <input key={k} className={inp} placeholder={p} inputMode={k === 'code' ? 'text' : 'decimal'} value={tf[t]?.[k] ?? ''} onChange={e => setF(t, k, e.target.value)}/>)}</div>)}</div>)}
+              <Lbl key={k} t={p}><input className={inp} inputMode={k === 'code' ? 'text' : 'decimal'} value={tf[t]?.[k] ?? ''} onChange={e => setF(t, k, e.target.value)}/></Lbl>)}</div>)}</div>)}
           <div className="flex gap-3"><button onClick={saveForm} className="flex-1 rounded-xl bg-green-600 text-xl font-bold">💾 Save</button>
             <button onClick={() => setForm(false)} className="px-6 rounded-xl bg-slate-800 text-xl">Cancel</button></div></div>}
       </section>}
 
       {mid && rid && !form && <section><h2 className="text-lg text-slate-400 mb-2">3. Rollers to forge (optional)</h2>
-        <div className="flex flex-wrap gap-2 items-center">{[25000, 50000, 100000, 200000].map(n =>
+        <div className="flex flex-wrap gap-2 items-end">{[25000, 50000, 100000, 200000].map(n =>
           <button key={n} onClick={() => setRq(n)} className={`${big} py-3 px-5 ${rq === n ? on : off}`}>{n.toLocaleString('en-IN')}</button>)}
-          <input className={`${inp} !w-48`} inputMode="numeric" placeholder="Other qty" value={rq ?? ''} onChange={e => setRq(e.target.value ? parseInt(e.target.value.replace(/\D/g, '')) || null : null)}/></div></section>}
+          <Lbl t="Other quantity"><input className={`${inp} !w-48`} inputMode="numeric" value={rq ?? ''} onChange={e => setRq(e.target.value ? parseInt(e.target.value.replace(/\D/g, '')) || null : null)}/></Lbl></div></section>}
 
       {mid && rid && !form && <section><h2 className="text-lg text-slate-400 mb-2">4. Tools needed: set quantity</h2>
         <div className="space-y-2">{STD.map(t => { const k = has(t), n = qtys[t] ?? 0, p = pending(t);
@@ -214,8 +217,8 @@ function Kiosk() {
               <div className="text-sm text-slate-400">{k ? det(k) : '+ details not added (tap Edit details)'}{p ? ` · ⚠ Already ordered (${p})` : ''}</div></div>
             <Stepper n={n} set={v => setQtys({ ...qtys, [t]: v })}/></div>; })}
           {others.map((o, i) => <div key={i} className={`flex items-center gap-3 rounded-xl p-3 border-2 ${on}`}>
-            <div className="flex-1 grid grid-cols-2 gap-2"><input className={inp} placeholder="Other tool name" value={o.name} onChange={e => setOthers(others.map((x, j) => j === i ? { ...x, name: e.target.value } : x))}/>
-              <input className={inp} placeholder="Size (OD x L ...)" value={o.dims} onChange={e => setOthers(others.map((x, j) => j === i ? { ...x, dims: e.target.value } : x))}/></div>
+            <div className="flex-1 grid grid-cols-2 gap-2"><Lbl t="Tool name"><input className={inp} value={o.name} onChange={e => setOthers(others.map((x, j) => j === i ? { ...x, name: e.target.value } : x))}/></Lbl>
+              <Lbl t="Size (OD x L ...)"><input className={inp} value={o.dims} onChange={e => setOthers(others.map((x, j) => j === i ? { ...x, dims: e.target.value } : x))}/></Lbl></div>
             <Stepper n={o.qty} set={v => setOthers(others.map((x, j) => j === i ? { ...x, qty: v } : x))}/>
             <button aria-label="Remove" onClick={() => setOthers(others.filter((_, j) => j !== i))} className="w-14 rounded-xl bg-red-900/50"><X className="mx-auto"/></button></div>)}
           <button onClick={() => setOthers([...others, { name: '', dims: '', qty: 5 }])} className="px-5 rounded-xl bg-slate-800 text-lg">+ Other tool</button></div></section>}
