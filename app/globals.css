@@ -1,0 +1,6 @@
+@tailwind base; @tailwind components; @tailwind utilities;
+html,body{background:#020617;color:#f1f5f9;touch-action:manipulation;overscroll-behavior:none;-webkit-tap-highlight-color:transparent}
+button{min-height:64px}
+@keyframes urgent{0%,100%{border-color:#ef4444}50%{border-color:#7f1d1d}}
+.urgent{animation:urgent 1.2s infinite}
+@media (prefers-reduced-motion:reduce){.urgent{animation:none}}
