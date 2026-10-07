@@ -10,7 +10,7 @@ export type HeaderMachine = { id: string; current_roller_id: string|null; status
 export type ProductionRun = { id: string; machine_id: string; roller_id: string; started_at: string; ended_at: string|null; status: RunStatus }
 export type ToolOrder = { id: string; slip_no: number; machine_id: string; tooling_id: string|null; run_id: string|null;
   custom_tool_name: string|null; custom_dimensions: string|null; quantity: number; priority: Priority; status: OrderStatus;
-  order_group: string|null; roller_id: string|null; roller_qty: number|null; qty_made: number|null; target_strokes: string|null; notes: string|null; created_at: string;
+  order_group: string|null; roller_id: string|null; roller_qty: number|null; qty_made: number|null; qty_received: number|null; target_strokes: string|null; notes: string|null; created_at: string;
   started_lathe_at: string|null; dispatched_at: string|null; received_at: string|null }
 
 type T<R> = { Row: R; Insert: Partial<R>; Update: Partial<R>; Relationships: [] };

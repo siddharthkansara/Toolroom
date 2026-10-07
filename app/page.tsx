@@ -52,7 +52,7 @@ function Kiosk() {
   const [sent, setSent] = useState(false);
   const [busy, setBusy] = useState(false);
   const [adding, setAdding] = useState(false); const [mname, setMname] = useState('');
-  const [sq, setSq] = useState(''); const [year, setYear] = useState<OrderFull[]>([]); const [open, setOpen] = useState<string | null>(null); const [view, setView] = useState<string | null>(null);
+  const [sq, setSq] = useState(''); const [year, setYear] = useState<OrderFull[]>([]); const [open, setOpen] = useState<string | null>(null); const [view, setView] = useState<string | null>(null); const [recv, setRecv] = useState<{ id: string; qty: number } | null>(null);
   const { orders, reload } = useOrders();
 
   const load = useCallback(async () => {
@@ -159,8 +159,10 @@ function Kiosk() {
     chime(); setSent(true); load();
     setTimeout(() => { setSent(false); reset(); setView(gid); }, 1800);
   }
-  async function received(id: string) {
-    await supabase.from('tool_orders').update({ status: 'RECEIVED', received_at: new Date().toISOString() }).eq('id', id); reload();
+  async function confirmReceived() {   // plant confirms the quantity actually received
+    if (!recv) return;
+    await supabase.from('tool_orders').update({ status: 'RECEIVED', received_at: new Date().toISOString(), qty_received: recv.qty }).eq('id', recv.id).eq('status', 'IN_TRANSIT');
+    setRecv(null); reload();
   }
 
   return (<div className="p-4 max-w-7xl mx-auto">
@@ -254,7 +256,7 @@ function Kiosk() {
           <div className="mt-2 space-y-1">{Object.entries(per).map(([k, v]) => <div key={k} className="flex justify-between gap-2">
             <span className="font-semibold">{k}</span><span className="text-slate-300 text-right">last {dy(v.last.created_at)} · {v.last.quantity} pcs <span className="text-slate-500">(total {v.n})</span></span></div>)}</div>
           {open === size && <div className="mt-3 border-t border-slate-800 pt-2 space-y-1 text-sm max-h-72 overflow-y-auto">{list.map(o => <div key={o.id} className="flex justify-between gap-2">
-            <span>{dy(o.created_at)} · {tname(o)}</span><span>{o.quantity} pcs{o.qty_made != null ? ` · made ${o.qty_made}` : ''} · {ST[o.status]}</span></div>)}</div>}</div>; })}</div>
+            <span>{dy(o.created_at)} · {tname(o)}</span><span>{o.quantity} pcs{o.qty_made != null ? ` · made ${o.qty_made}` : ''}{o.qty_received != null ? ` · received ${o.qty_received}` : ''} · {ST[o.status]}</span></div>)}</div>}</div>; })}</div>
     </div>) : (<div>
       <div className="flex gap-2 overflow-x-auto pb-3">{[null, ...machines.map(m => m.id)].map(id =>
         <button key={id ?? 'all'} onClick={() => setFilter(id)} className={`px-6 rounded-full border-2 text-xl whitespace-nowrap ${filter === id ? on : off}`}>{id ?? 'All'}</button>)}</div>
@@ -264,9 +266,18 @@ function Kiosk() {
           <h3 className="text-xl font-bold mb-2">{label} <span className="text-slate-500">{list.length}</span></h3>
           <div className="space-y-2">{list.map(o => <div key={o.id} className={`rounded-lg bg-slate-800 p-3 ${o.priority === 'URGENT_MACHINE_DOWN' ? 'border-l-4 border-red-500' : ''}`}>
             <div className="text-xl font-bold">{o.machine_id} · {o.roller?.roller_size ?? ''}</div>
-            <div className="text-slate-300">{tname(o)} × {o.quantity}{o.qty_made != null ? ` (made ${o.qty_made})` : ''}</div>
+            <div className="text-slate-300">{tname(o)} × {o.quantity}{o.qty_made != null ? ` (made ${o.qty_made}${o.qty_received != null ? `, got ${o.qty_received}` : ''})` : ''}</div>
             <div className="text-xs text-slate-500">Slip #{o.slip_no} · {dt(o.created_at)}</div>
-            {st === 'IN_TRANSIT' && <button onClick={() => received(o.id)} className="mt-2 w-full rounded-lg bg-green-600 font-bold">✔ Received in plant</button>}</div>)}</div></div>; })}</div>
+            {st === 'IN_TRANSIT' && (recv?.id === o.id
+              ? <div className="mt-2 rounded-lg bg-slate-900 p-3 text-center space-y-2">
+                  <div>How many did you receive? <span className="text-slate-400">(CNC made {o.qty_made ?? '—'}, ordered {o.quantity})</span></div>
+                  <div className="flex items-center justify-center gap-3">
+                    <button aria-label="Less" onClick={() => setRecv({ id: o.id, qty: Math.max(0, recv.qty - 1) })} className="w-16 rounded-xl bg-slate-700"><Minus className="mx-auto"/></button>
+                    <span className="text-5xl font-bold w-20">{recv.qty}</span>
+                    <button aria-label="More" onClick={() => setRecv({ id: o.id, qty: recv.qty + 1 })} className="w-16 rounded-xl bg-slate-700"><Plus className="mx-auto"/></button></div>
+                  <div className="flex gap-2"><button onClick={confirmReceived} className="flex-1 rounded-lg bg-green-600 font-bold">✔ Confirm received</button>
+                    <button onClick={() => setRecv(null)} className="px-4 rounded-lg bg-slate-700">Cancel</button></div></div>
+              : <button onClick={() => setRecv({ id: o.id, qty: o.qty_made ?? o.quantity })} className="mt-2 w-full rounded-lg bg-green-600 font-bold">✔ Received in plant</button>)}</div>)}</div></div>; })}</div>
     </div>)}
   {viewItems.length > 0 && (() => { const f = viewItems[0]; const queued = viewItems.filter(o => o.status === 'QUEUED'); return (
     <div className="fixed inset-0 z-50 bg-black/70 flex items-center justify-center p-4" onClick={() => setView(null)}>
@@ -277,7 +288,7 @@ function Kiosk() {
           <div className="text-slate-400 text-sm">Ordered {dt(f.created_at)} · {f.priority === 'URGENT_MACHINE_DOWN' ? '🔴 Urgent' : '🟡 Next morning'}{f.roller_qty ? ` · ${f.roller_qty.toLocaleString('en-IN')} rollers to forge` : ''}</div></div>
           <button aria-label="Close" onClick={() => setView(null)} className="w-14 rounded-xl bg-slate-800"><X className="mx-auto"/></button></div>
         <div className="mt-4 space-y-2">{viewItems.map(o => <div key={o.id} className="flex items-center gap-3 rounded-xl bg-slate-800 p-3">
-          <div className="flex-1"><div className="text-lg font-bold">{tname(o)} × {o.quantity}</div><div className="text-sm text-slate-400">{ST[o.status]}{o.qty_made != null ? ` · made ${o.qty_made}` : ''}</div></div>
+          <div className="flex-1"><div className="text-lg font-bold">{tname(o)} × {o.quantity}</div><div className="text-sm text-slate-400">{ST[o.status]}{o.qty_made != null ? ` · made ${o.qty_made}` : ''}{o.qty_received != null ? ` · received ${o.qty_received}` : ''}</div></div>
           {o.status === 'QUEUED' && <button onClick={() => del([o.id])} className="px-4 rounded-xl bg-red-800 min-h-12">🗑 Delete</button>}</div>)}</div>
         {queued.length > 1 && <button onClick={() => del(queued.map(o => o.id))} className="mt-3 w-full rounded-xl bg-red-900 min-h-14 text-lg">🗑 Delete all waiting tools in this order</button>}
         <p className="text-xs text-slate-500 mt-3">Only tools still waiting in the queue can be deleted. Once a tool is on the lathe, ask the CNC operator to stop the job.</p>

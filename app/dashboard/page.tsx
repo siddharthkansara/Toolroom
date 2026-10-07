@@ -25,9 +25,9 @@ function Dashboard() {
     }
     const day = (x: string) => { const d = new Date(x); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`; };
     all = all.filter(o => (!from || day(o.created_at) >= from) && (!to || day(o.created_at) <= to));
-    const head = ['Slip No', 'Ordered At', 'Machine', 'Roller Size', 'Drawing No', 'Party', 'Tool', 'Batta No', 'OD', 'Length', 'OD 2', 'Step', 'Custom Tool Dims', 'Priority', 'Rollers To Forge', 'Qty Ordered', 'Qty Made', 'Shortfall', 'Status', 'Machining Started', 'Ready To Dispatch At', 'Received At'];
+    const head = ['Slip No', 'Ordered At', 'Machine', 'Roller Size', 'Drawing No', 'Party', 'Tool', 'Batta No', 'OD', 'Length', 'OD 2', 'Step', 'Custom Tool Dims', 'Priority', 'Rollers To Forge', 'Qty Ordered', 'Qty Made', 'Shortfall (ordered-made)', 'Qty Received', 'Missing in transit (made-received)', 'Status', 'Machining Started', 'Ready To Dispatch At', 'Received At'];
     const rows = all.map(o => [o.slip_no, fd(o.created_at), o.machine_id, o.roller?.roller_size, o.roller?.customer_drg, o.roller?.party_name, kind(o), o.tooling?.batta_code, o.tooling?.od_dim, o.tooling?.length_dim, o.tooling?.od2_dim, o.tooling?.step_depth_dim,
-      o.custom_dimensions, o.priority === 'URGENT_MACHINE_DOWN' ? 'Urgent' : 'Next morning', o.roller_qty, o.quantity, o.qty_made, o.qty_made != null ? o.quantity - o.qty_made : '', o.status, fd(o.started_lathe_at), fd(o.dispatched_at), fd(o.received_at)]);
+      o.custom_dimensions, o.priority === 'URGENT_MACHINE_DOWN' ? 'Urgent' : 'Next morning', o.roller_qty, o.quantity, o.qty_made, o.qty_made != null ? o.quantity - o.qty_made : '', o.qty_received, o.qty_received != null && o.qty_made != null ? o.qty_made - o.qty_received : '', o.status, fd(o.started_lathe_at), fd(o.dispatched_at), fd(o.received_at)]);
     const esc = (v: unknown) => `"${String(v ?? '').replace(/"/g, '""')}"`;
     const csv = '\uFEFF' + [head, ...rows].map(r => r.map(esc).join(',')).join('\r\n');
     const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv' }));
@@ -79,9 +79,9 @@ function Dashboard() {
       <input type="month" value={month} onChange={e => setMonth(e.target.value)} className="bg-slate-800 rounded-lg p-2"/></div>
       {!Object.keys(rep).length && <p className="text-slate-500">No orders this month.</p>}
       <div className="grid xl:grid-cols-2 gap-4">{Object.entries(rep).sort().map(([size, list]) => <div key={size} className={card}>
-        <div className="text-lg font-bold">{size} <span className="text-slate-400 font-normal">Drg {list[0].roller?.customer_drg ?? '—'} · ordered {list.reduce((a, o) => a + o.quantity, 0)} · made {list.reduce((a, o) => a + (o.qty_made ?? 0), 0)}</span></div>
+        <div className="text-lg font-bold">{size} <span className="text-slate-400 font-normal">Drg {list[0].roller?.customer_drg ?? '—'} · ordered {list.reduce((a, o) => a + o.quantity, 0)} · made {list.reduce((a, o) => a + (o.qty_made ?? 0), 0)} · received {list.reduce((a, o) => a + (o.qty_received ?? 0), 0)}</span></div>
         <table className="w-full mt-2 text-sm"><tbody>{[...list].sort((a, b) => +new Date(a.created_at) - +new Date(b.created_at)).map(o => <tr key={o.id} className="border-t border-slate-800">
-          <td className="py-1">{dt(o.created_at)}</td><td>{o.machine_id}</td><td>{tname(o)}</td><td className="text-right">{o.quantity}</td><td className="text-right text-green-400">{o.qty_made ?? '—'}</td></tr>)}</tbody></table></div>)}</div></section>
+          <td className="py-1">{dt(o.created_at)}</td><td>{o.machine_id}</td><td>{tname(o)}</td><td className="text-right">{o.quantity}</td><td className="text-right text-green-400">{o.qty_made ?? '—'}</td><td className="text-right text-sky-400">{o.qty_received ?? '—'}</td></tr>)}</tbody></table></div>)}</div></section>
   </div>);
 }
 

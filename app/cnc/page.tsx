@@ -43,7 +43,7 @@ function Cnc() {
     <div className="mt-2 space-y-1">{items.map(o => <div key={o.id} className="flex justify-between gap-3 flex-wrap rounded-lg bg-slate-800 p-2">
       <span className="font-bold text-amber-300">{nm(o)}</span>
       <span>Made <b className="text-xl">{o.qty_made}</b> <span className="text-slate-400">of {o.quantity}</span></span>
-      <span className="text-sm text-slate-400">{o.dispatched_at ? dt(o.dispatched_at) : ''} · {o.status === 'IN_TRANSIT' ? '📦 still at CNC' : o.received_at ? `✔ at plant ${dt(o.received_at)}` : '✔ at plant'}</span></div>)}</div></div>; };
+      <span className="text-sm text-slate-400">{o.dispatched_at ? dt(o.dispatched_at) : ''} · {o.status === 'IN_TRANSIT' ? '📦 still at CNC' : o.received_at ? `✔ at plant (${o.qty_received ?? '?'} received) ${dt(o.received_at)}` : '✔ at plant'}</span></div>)}</div></div>; };
   async function start(id: string) {
     const { error } = await supabase.from('tool_orders').update({ status: 'ON_LATHE', started_lathe_at: new Date().toISOString() }).eq('id', id);
     if (error) alert('Another job is already on the lathe.'); reload();
