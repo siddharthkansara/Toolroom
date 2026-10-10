@@ -2,6 +2,7 @@
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { supabase } from '@/lib/supabase';
+import { ThemeToggle } from '@/lib/theme';
 import { HOME, type Role } from '@/lib/auth';
 
 export default function Login() {
@@ -29,6 +30,7 @@ export default function Login() {
   }
   const inp = 'h-16 rounded-xl bg-slate-900 border-2 border-slate-700 px-4 text-xl w-full';
   return (<div className="min-h-screen flex items-center justify-center p-6"><div className="w-full max-w-sm space-y-4">
+    <div className="flex justify-end"><ThemeToggle/></div>
     <h1 className="text-3xl font-bold text-center">Toolroom Login</h1>
     <input className={inp} type="email" autoComplete="username" placeholder="Email" value={email} onChange={e => setEmail(e.target.value)}/>
     <input className={inp} type="password" autoComplete="current-password" placeholder="Password" value={pw} onChange={e => setPw(e.target.value)} onKeyDown={e => e.key === 'Enter' && go()}/>

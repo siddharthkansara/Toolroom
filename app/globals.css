@@ -4,3 +4,32 @@ button{min-height:64px}
 @keyframes urgent{0%,100%{border-color:#ef4444}50%{border-color:#7f1d1d}}
 .urgent{animation:urgent 1.2s infinite}
 @media (prefers-reduced-motion:reduce){.urgent{animation:none}}
+
+/* ---------- Light theme: remaps the dark palette when <html data-theme="light"> ---------- */
+html{color-scheme:dark}
+html[data-theme="light"]{color-scheme:light}
+html[data-theme="light"],html[data-theme="light"] body{background:#f1f5f9;color:#0f172a}
+html[data-theme="light"] .bg-slate-950{background-color:#f1f5f9}
+html[data-theme="light"] .bg-slate-900{background-color:#fff}
+html[data-theme="light"] .bg-slate-800{background-color:#e2e8f0}
+html[data-theme="light"] .bg-slate-700{background-color:#cbd5e1}
+html[data-theme="light"] .bg-slate-600{background-color:#94a3b8}
+html[data-theme="light"] .border-slate-800{border-color:#e2e8f0}
+html[data-theme="light"] .border-slate-700{border-color:#cbd5e1}
+html[data-theme="light"] .border-slate-500{border-color:#94a3b8}
+html[data-theme="light"] .text-slate-100{color:#0f172a}
+html[data-theme="light"] .text-slate-300{color:#334155}
+html[data-theme="light"] .text-slate-400{color:#475569}
+html[data-theme="light"] .text-slate-500{color:#64748b}
+html[data-theme="light"] .text-slate-600{color:#94a3b8}
+html[data-theme="light"] .text-amber-300,html[data-theme="light"] .text-amber-400{color:#b45309}
+html[data-theme="light"] .text-green-400{color:#15803d}
+html[data-theme="light"] .text-sky-400{color:#0369a1}
+html[data-theme="light"] .text-red-400{color:#b91c1c}
+html[data-theme="light"] .bg-green-600,html[data-theme="light"] .bg-blue-600,html[data-theme="light"] .bg-red-600,
+html[data-theme="light"] .bg-red-800,html[data-theme="light"] .bg-red-900,html[data-theme="light"] .bg-amber-700{color:#fff}
+html[data-theme="light"] .bg-red-900\/50{background-color:#fecaca;color:#7f1d1d}
+html[data-theme="light"] .disabled\:bg-slate-800:disabled{background-color:#e2e8f0;color:#94a3b8}
+html[data-theme="light"] .disabled\:bg-slate-700:disabled{background-color:#cbd5e1;color:#94a3b8}
+html[data-theme="light"] .disabled\:text-slate-500:disabled,html[data-theme="light"] .disabled\:text-slate-600:disabled{color:#94a3b8}
+html[data-theme="light"] .active\:bg-slate-700:active{background-color:#cbd5e1}

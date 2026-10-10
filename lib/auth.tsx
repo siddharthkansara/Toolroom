@@ -3,6 +3,7 @@ import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { supabase } from '@/lib/supabase';
+import { ThemeToggle } from '@/lib/theme';
 
 export type Role = 'toolroom' | 'cnc' | 'owner';
 export const HOME: Record<Role, string> = { toolroom: '/', cnc: '/cnc', owner: '/dashboard' };
@@ -41,6 +42,6 @@ export function Guard({ allow, children }: { allow: Role[]; children: React.Reac
       <div className="flex gap-3 items-center flex-wrap"><span className="text-slate-400">{st.email} · {st.role}</span>
         {st.role === 'owner' && (['/', '/cnc', '/dashboard'] as const).map((h, i) =>
           <Link key={h} href={h} className="px-3 py-1 rounded-lg bg-slate-800">{['Toolroom', 'CNC', 'Dashboard'][i]}</Link>)}</div>
-      <button onClick={signOut} className="px-4 min-h-10 rounded-lg bg-slate-800">Log out</button></div>
+      <div className="flex gap-2"><ThemeToggle/><button onClick={signOut} className="px-4 min-h-10 rounded-lg bg-slate-800">Log out</button></div></div>
     {children}</>);
 }
