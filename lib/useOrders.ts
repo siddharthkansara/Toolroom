@@ -1,22 +1,28 @@
 'use client';
 import { useEffect, useState, useCallback } from 'react';
 import { supabase } from './supabase';
-import type { OrderFull } from '@/types/database';
+import type { OrderFull, DeliveryFull } from '@/types/database';
 
 export const SEL = '*, roller:roller_master(roller_size, customer_drg, party_name), tooling:tooling_master(*)';
+export const DSEL = `*, ord:tool_orders(${SEL})`;
 export function useOrders() {
   const [orders, setOrders] = useState<OrderFull[]>([]);
+  const [deliveries, setDeliveries] = useState<DeliveryFull[]>([]);
   const load = useCallback(async () => {
-    const { data } = await supabase.from('tool_orders').select(SEL).order('created_at', { ascending: false }).limit(1000);
-    if (data) setOrders(data as unknown as OrderFull[]);
+    const [o, d] = await Promise.all([
+      supabase.from('tool_orders').select(SEL).order('created_at', { ascending: false }).limit(1000),
+      supabase.from('deliveries').select(DSEL).order('made_at', { ascending: false }).limit(1000)]);
+    if (o.data) setOrders(o.data as unknown as OrderFull[]);
+    if (d.data) setDeliveries(d.data as unknown as DeliveryFull[]);
   }, []);
   useEffect(() => {
     load();
-    const ch = supabase.channel('orders-' + Math.random()).on('postgres_changes',
-      { event: '*', schema: 'public', table: 'tool_orders' }, load).subscribe();
+    const ch = supabase.channel('orders-' + Math.random())
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'tool_orders' }, load)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'deliveries' }, load).subscribe();
     return () => { supabase.removeChannel(ch); };
   }, [load]);
-  return { orders, reload: load };
+  return { orders, deliveries, reload: load };
 }
 export const chime = () => { try {
   const c = new (window.AudioContext || (window as any).webkitAudioContext)();
