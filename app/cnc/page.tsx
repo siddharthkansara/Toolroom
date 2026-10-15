@@ -3,6 +3,8 @@ import { useEffect, useState } from 'react';
 import { supabase, rpc } from '@/lib/supabase';
 import { Guard } from '@/lib/auth';
 import { useOrders, dt, gkey, DSEL } from '@/lib/useOrders';
+import { FACTORIES, FCHIP, mname as mcode, rollerLabel } from '@/lib/factories';
+import { URGENCY, cmpQueue } from '@/lib/urgency';
 import { TOOL_LABEL, type OrderFull, type DeliveryFull } from '@/types/database';
 
 const nm = (o: OrderFull) => (o.tooling ? TOOL_LABEL[o.tooling.tool_type] : o.custom_tool_name || 'Other tool');
@@ -12,17 +14,19 @@ const det = (o: OrderFull) => { const k = o.tooling; if (!k) return o.custom_dim
     : k.tool_type === 'FACING_PUNCH' ? `OD ${k.od_dim ?? '—'} × L ${k.length_dim ?? '—'}` : ''; };
 const rem = (o: OrderFull) => Math.max(0, o.quantity - (o.qty_made ?? 0));
 const dayKey = (d: string) => new Date(d).toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' });
-const dayLabel = (k: string) => { const n = Date.now();
-  return k === dayKey(new Date(n).toISOString()) ? 'Today' : k === dayKey(new Date(n - 864e5).toISOString()) ? 'Yesterday'
-    : new Date(k + 'T12:00:00').toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' }); };
+const when = (d: string) => { const n = Date.now(); const k = dayKey(d);
+  const day = k === dayKey(new Date(n).toISOString()) ? 'Today' : k === dayKey(new Date(n - 864e5).toISOString()) ? 'Yesterday'
+    : new Date(d).toLocaleDateString('en-IN', { timeZone: 'Asia/Kolkata', day: '2-digit', month: 'short' });
+  return `${day}, ${new Date(d).toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata', hour: 'numeric', minute: '2-digit', hour12: true })}`; };
 const groupBy = <T,>(list: T[], key: (x: T) => string) => { const m: Record<string, T[]> = {}; list.forEach(x => (m[key(x)] ??= []).push(x)); return Object.entries(m); };
+const FTag = ({ f, big }: { f: string; big?: boolean }) => <span className={`${FCHIP[f] ?? 'bg-slate-600'} text-white rounded-lg font-extrabold ${big ? 'px-4 py-1 text-2xl' : 'px-2 py-0.5 text-sm'}`}>{f}</span>;
 
 function Cnc() {
   const { orders, deliveries, reload } = useOrders();
   const [tab, setTab] = useState<'queue' | 'ready' | 'history'>('queue');
-  const [done, setDone] = useState<{ id: string; qty: number } | null>(null);
+  const [fsel, setFsel] = useState<string | null>(null);
+  const [done, setDone] = useState<{ id: string; qty: number } | null>(null); const [doneNote, setDoneNote] = useState('');
   const [openB, setOpenB] = useState<Record<string, boolean>>({});
-  const [shut, setShut] = useState<Record<string, boolean>>({});
   const [hist, setHist] = useState<DeliveryFull[]>([]); const [hd, setHd] = useState(7); const [hs, setHs] = useState('');
 
   useEffect(() => {   // every batch ever made (paged: Supabase returns max 1000 rows per request)
@@ -34,72 +38,90 @@ function Cnc() {
       } setHist(all); })();
   }, [tab, deliveries]);
 
-  const running = orders.find(o => o.status === 'ON_LATHE');   // one job at a time
+  const facs: string[] = fsel ? [fsel] : [...FACTORIES];
+  const running = orders.find(o => o.status === 'ON_LATHE');   // one job at a time on the lathe
   const waiting = orders.filter(o => o.status === 'QUEUED');
-  const urgent = (o: OrderFull) => o.priority === 'URGENT_MACHINE_DOWN';
-  const oldest = (l: OrderFull[]) => [...l].sort((a, b) => +new Date(a.created_at) - +new Date(b.created_at));
   const pcs = (l: OrderFull[]) => l.reduce((a, o) => a + rem(o), 0);
-  const ready = deliveries.filter(d => d.status === 'READY' && d.ord);
+  const batchesOf = (f: string) => groupBy(waiting.filter(o => o.factory_id === f), gkey)
+    .map(([k, items]) => ({ k, items: items.sort((a, b) => a.slip_no - b.slip_no) }))
+    .sort((a, b) => cmpQueue(a.items[0], b.items[0]));   // Breakdown > Urgent > Normal, then oldest first
+  const rushParts = FACTORIES.map(f => { const b = batchesOf(f); const x = b.filter(c => c.items[0].priority === 'URGENT_MACHINE_DOWN').length; const u = b.filter(c => c.items[0].priority === 'URGENT').length;
+    return x || u ? `${f}: ${[x ? `${x} breakdown` : '', u ? `${u} urgent` : ''].filter(Boolean).join(', ')}` : ''; }).filter(Boolean);
+  const anyBreakdown = waiting.some(o => o.priority === 'URGENT_MACHINE_DOWN');
+  const ready = deliveries.filter(d => d.status === 'READY' && d.ord && (!fsel || d.factory_id === fsel));
+  const cutoff = hd ? (() => { const d = new Date(); d.setHours(0, 0, 0, 0); d.setDate(d.getDate() - (hd - 1)); return +d; })() : 0;
+  const hlist = hist.filter(d => d.ord && (!fsel || d.factory_id === fsel) && +new Date(d.made_at) >= cutoff && (d.ord.roller?.roller_size ?? '').toLowerCase().includes(hs.trim().toLowerCase()));
 
-  async function start(id: string) {
+  async function start(id: string) {   // In Progress
     const { error } = await supabase.from('tool_orders').update({ status: 'ON_LATHE', started_lathe_at: new Date().toISOString() }).eq('id', id);
     if (error) alert('Another job is already on the lathe.'); reload();
   }
-  async function stop(id: string) {   // back to the queue, nothing recorded
+  async function stop(id: string) {
     await supabase.from('tool_orders').update({ status: 'QUEUED', started_lathe_at: null }).eq('id', id); setDone(null); reload();
   }
-  async function finish() {   // records this batch; the rest (if any) stays in the queue
+  async function finish() {   // Completed / Made: records this batch; anything not made stays in the queue
     if (!done) return;
-    const { error } = await rpc('complete_batch', { p_order: done.id, p_qty: done.qty });
+    const { error } = await rpc('complete_batch', { p_order: done.id, p_qty: done.qty, p_note: doneNote.trim() || null });
     if (error) alert('Could not save: ' + error.message);
     setDone(null); reload();
   }
 
-  const row = ([k, items]: [string, OrderFull[]]) => { const f = items[0]; const isOpen = !!openB[k]; const u = urgent(f);
-    return (<div key={k} className={`rounded-xl border-2 bg-slate-900 ${u ? 'border-red-500' : 'border-slate-700'}`}>
-      <button onClick={() => setOpenB({ ...openB, [k]: !isOpen })} className="w-full min-h-16 flex items-center gap-3 px-4 text-left">
-        <span className="text-2xl font-extrabold">{f.roller?.roller_size ?? '—'}</span>
-        <span className="flex-1 text-slate-400">{f.machine_id} · {items.length} tool{items.length > 1 ? 's' : ''} · {pcs(items)} pcs · {dt(f.created_at)}</span>
-        {u && <span className="bg-red-600 rounded px-2 text-sm font-bold">URGENT</span>}<span className="text-xl">{isOpen ? '▲' : '▼'}</span></button>
+  const bcard = ({ k, items }: { k: string; items: OrderFull[] }) => { const f = items[0]; const U = URGENCY[f.priority]; const isOpen = !!openB[k];
+    return (<div key={k} className={`rounded-xl border-2 bg-slate-900 ${U.border} ${f.priority === 'URGENT_MACHINE_DOWN' ? 'urgent' : ''}`}>
+      <button onClick={() => setOpenB({ ...openB, [k]: !isOpen })} className="w-full text-left px-4 py-3 min-h-20 space-y-1">
+        <div className="flex items-center gap-2 flex-wrap"><span className="text-2xl font-extrabold">{rollerLabel(f.factory_id, f.roller?.roller_size ?? '—')}</span>
+          <span className={`${U.chip} rounded px-2 text-sm font-bold`}>{U.short}</span>{items.some(o => o.notes) && <span title="Has a note">📝</span>}
+          <span className="ml-auto text-xl">{isOpen ? '▲' : '▼'}</span></div>
+        <div className="text-slate-400">{mcode(f.machine_id)} · requested {when(f.created_at)}</div>
+        <div className="text-slate-200">{items.map(o => `${nm(o)} ×${rem(o)}`).join(', ')}</div></button>
       {isOpen && <div className="px-4 pb-4 space-y-2">
         <div className="text-sm text-slate-400">Drg {f.roller?.customer_drg ?? '—'}{f.roller?.party_name ? ` · Party ${f.roller.party_name}` : ''}{f.roller_qty ? ` · ${f.roller_qty.toLocaleString('en-IN')} rollers to forge` : ''} · Slip #{f.slip_no}</div>
-        {items.sort((a, b) => a.slip_no - b.slip_no).map(o => <div key={o.id} className="rounded-xl bg-slate-800 p-3 flex items-center gap-3 flex-wrap">
-          <div className="flex-1 min-w-48"><div className="text-xl font-bold text-amber-300">{nm(o)} · {rem(o)} to make</div>
+        {items.map(o => <div key={o.id} className="rounded-xl bg-slate-800 p-3 flex items-center gap-3 flex-wrap">
+          <div className="flex-1 min-w-40"><div className="text-xl font-bold text-amber-300">{nm(o)} · {rem(o)} to make</div>
             <div className="text-slate-300">{det(o)}</div>
+            {o.notes && <div className="text-amber-300 font-semibold">📝 {o.notes}</div>}
             <div className="text-sm text-slate-400">Ordered {o.quantity}{(o.qty_made ?? 0) > 0 ? ` · already made ${o.qty_made}` : ''}</div></div>
-          <button disabled={!!running} onClick={() => start(o.id)} className="h-14 px-6 rounded-xl bg-blue-600 disabled:bg-slate-700 disabled:text-slate-500 text-lg font-bold">{running ? 'Lathe busy' : '▶ Start'}</button></div>)}</div>}
+          <button disabled={!!running} onClick={() => start(o.id)} className="h-14 px-5 rounded-xl bg-blue-600 disabled:bg-slate-700 disabled:text-slate-500 text-lg font-bold">{running ? 'Lathe busy' : '▶ Start'}</button></div>)}</div>}
     </div>); };
 
+  const column = (f: string) => { const bs = batchesOf(f); const w = waiting.filter(o => o.factory_id === f);
+    return (<div key={f} className="rounded-2xl border border-slate-700 p-3 space-y-3">
+      <div className="flex items-center justify-between gap-2 flex-wrap"><FTag f={f} big/><span className="text-slate-400">{bs.length} order{bs.length === 1 ? '' : 's'} · {pcs(w)} pcs</span></div>
+      {!bs.length && <p className="text-slate-500 py-6 text-center">Nothing waiting</p>}
+      {bs.map(bcard)}</div>); };
+
   const dcard = ([k, items]: [string, DeliveryFull[]]) => { const f = items[0].ord!; return (<div key={k} className="rounded-2xl bg-slate-900 border-2 border-slate-700 p-4">
-    <div className="text-2xl font-bold">{f.roller?.roller_size ?? '—'} <span className="text-slate-400 text-lg font-normal">Drg {f.roller?.customer_drg ?? '—'}{f.roller?.party_name ? ` · ${f.roller.party_name}` : ''} · {f.machine_id}</span></div>
+    <div className="text-xl font-bold">{rollerLabel(f.factory_id, f.roller?.roller_size ?? '—')} <span className="text-slate-400 text-base font-normal">Drg {f.roller?.customer_drg ?? '—'} · {mcode(f.machine_id)}</span></div>
     <div className="mt-2 space-y-1">{items.map(d => <div key={d.id} className="flex justify-between gap-3 flex-wrap rounded-lg bg-slate-800 p-2">
       <span className="font-bold text-amber-300">{nm(d.ord!)}</span>
       <span>Batch <b className="text-xl">{d.qty_made}</b> <span className="text-slate-400">(order {d.ord!.quantity}, made so far {d.ord!.qty_made ?? 0})</span></span>
-      <span className="text-sm text-slate-400">{dt(d.made_at)} · {d.status === 'READY' ? '📦 still at CNC' : `✔ at plant (${d.qty_received ?? '?'} received)`}</span></div>)}</div></div>); };
+      <span className="text-sm text-slate-400">{dt(d.made_at)} · {d.status === 'READY' ? '📦 still at CNC' : `✔ at plant (${d.qty_received ?? '?'} received)`}</span>
+      {d.note && <span className="w-full text-sm text-amber-300">📝 {d.note}</span>}</div>)}</div></div>); };
+  const fcols = (list: DeliveryFull[]) => (<div className={`grid gap-4 ${facs.length > 1 ? 'lg:grid-cols-3' : ''}`}>{facs.map(f => { const l = list.filter(d => d.factory_id === f);
+    const g = groupBy(l, d => gkey(d.ord!)).sort((a, b) => +new Date(b[1][0].made_at) - +new Date(a[1][0].made_at));
+    return <div key={f} className="space-y-3"><div className="flex items-center justify-between"><FTag f={f} big/><span className="text-slate-400">{l.reduce((a, d) => a + d.qty_made, 0)} pcs</span></div>
+      {!g.length && <p className="text-slate-500 py-4 text-center">None</p>}{g.map(dcard)}</div>; })}</div>);
 
-  const cutoff = hd ? (() => { const d = new Date(); d.setHours(0, 0, 0, 0); d.setDate(d.getDate() - (hd - 1)); return +d; })() : 0;
-  const hlist = hist.filter(d => d.ord && +new Date(d.made_at) >= cutoff && (d.ord.roller?.roller_size ?? '').toLowerCase().includes(hs.trim().toLowerCase()));
-  const newest = (g: [string, DeliveryFull[]][]) => g.sort((a, b) => +new Date(b[1][0].made_at) - +new Date(a[1][0].made_at));
-  const days = groupBy(oldest(waiting.filter(o => !urgent(o))), o => dayKey(o.created_at));
-  const urg = waiting.filter(urgent);
-
-  return (<div className="p-4 max-w-4xl mx-auto space-y-4">
-    <h1 className="text-2xl font-bold">CNC {running && <span className="ml-2 text-base bg-blue-600 rounded-lg px-3 py-1">Lathe busy</span>}</h1>
-    <div className="grid grid-cols-3 gap-2">{([['queue', `To make (${waiting.length + (running ? 1 : 0)})`], ['ready', `Ready · at my place (${ready.length})`], ['history', 'History']] as const).map(([t, l]) =>
+  return (<div className="p-4 max-w-7xl mx-auto space-y-4">
+    <h1 className="text-2xl font-bold">CNC {running && <span className="ml-2 text-base bg-blue-600 text-white rounded-lg px-3 py-1">Lathe busy</span>}</h1>
+    <div className="grid grid-cols-3 gap-2">{([['queue', `To make (${waiting.length + (running ? 1 : 0)})`], ['ready', `Ready · at my place (${deliveries.filter(d => d.status === 'READY').length})`], ['history', 'History']] as const).map(([t, l]) =>
       <button key={t} onClick={() => setTab(t)} className={`h-16 rounded-xl border-2 text-lg font-bold ${tab === t ? 'border-amber-400 bg-amber-400/20' : 'border-slate-700 bg-slate-900'}`}>{l}</button>)}</div>
+    <div className="flex gap-2 flex-wrap">{[null, ...FACTORIES].map(f => <button key={f ?? 'all'} onClick={() => setFsel(f)} className={`px-5 min-h-12 rounded-xl border-2 text-lg font-bold ${fsel === f ? 'border-amber-400 bg-amber-400/20' : 'border-slate-700 bg-slate-900'}`}>{f ?? 'All factories'}</button>)}</div>
 
     {tab === 'queue' && <>
-      {running && (() => { const o = running; const d = done?.id === o.id ? done : null;
+      {rushParts.length > 0 && <div className={`rounded-xl p-3 font-bold ${anyBreakdown ? 'bg-red-600 text-white' : 'bg-amber-500 text-slate-950'}`}>{anyBreakdown ? '🔴' : '🟠'} Rush waiting · {rushParts.join(' · ')}</div>}
+      {running && (() => { const o = running; const d = done?.id === o.id ? done : null; const U = URGENCY[o.priority];
         return <div className="rounded-2xl bg-slate-900 border-4 border-blue-500 p-4">
           <div className="flex justify-between gap-2 flex-wrap"><div>
-            <div className="text-3xl font-extrabold">{o.roller?.roller_size ?? '—'} <span className="text-slate-400 text-xl font-semibold">Drg {o.roller?.customer_drg ?? '—'}</span></div>
-            <div className="text-slate-300">{o.roller?.party_name ? `Party: ${o.roller.party_name} · ` : ''}For {o.machine_id}{o.roller_qty ? ` · ${o.roller_qty.toLocaleString('en-IN')} rollers to forge` : ''}</div>
+            <div className="text-3xl font-extrabold">{rollerLabel(o.factory_id, o.roller?.roller_size ?? '—')} <span className="text-slate-400 text-xl font-semibold">Drg {o.roller?.customer_drg ?? '—'}</span></div>
+            <div className="text-slate-300">{o.roller?.party_name ? `Party: ${o.roller.party_name} · ` : ''}Header {mcode(o.machine_id)}{o.roller_qty ? ` · ${o.roller_qty.toLocaleString('en-IN')} rollers to forge` : ''}</div>
             <div className="text-3xl mt-2 text-amber-300 font-bold">{nm(o)} · {rem(o)} to make</div>
             <div className="text-xl text-slate-300">{det(o)}</div>
-            <div className="text-sm text-slate-400">Ordered {o.quantity}{(o.qty_made ?? 0) > 0 ? ` · already made ${o.qty_made}` : ''} · placed {dt(o.created_at)}{o.started_lathe_at ? ` · on lathe since ${dt(o.started_lathe_at)}` : ''}</div></div>
-            <div className="flex gap-2 h-fit">{urgent(o) && <span className="bg-red-600 rounded-lg px-3 py-1 font-bold">URGENT</span>}<span className="bg-blue-600 rounded-lg px-3 py-1 font-bold">ON LATHE</span></div></div>
+            {o.notes && <div className="text-xl text-amber-300 font-semibold mt-1">📝 {o.notes}</div>}
+            <div className="text-sm text-slate-400">Ordered {o.quantity}{(o.qty_made ?? 0) > 0 ? ` · already made ${o.qty_made}` : ''} · requested {when(o.created_at)}{o.started_lathe_at ? ` · in progress since ${dt(o.started_lathe_at)}` : ''}</div></div>
+            <div className="flex gap-2 h-fit"><FTag f={o.factory_id}/><span className={`${U.chip} rounded-lg px-3 py-0.5 font-bold`}>{U.short}</span><span className="bg-blue-600 text-white rounded-lg px-3 py-0.5 font-bold">IN PROGRESS</span></div></div>
           {!d ? <div className="grid grid-cols-2 gap-3 mt-4">
-              <button onClick={() => setDone({ id: o.id, qty: Math.max(1, rem(o)) })} className="h-20 rounded-2xl bg-green-600 text-xl font-extrabold">✔ COMPLETE BATCH · READY TO DISPATCH</button>
+              <button onClick={() => { setDoneNote(''); setDone({ id: o.id, qty: Math.max(1, rem(o)) }); }} className="h-20 rounded-2xl bg-green-600 text-xl font-extrabold">✔ COMPLETED / MADE</button>
               <button onClick={() => stop(o.id)} className="h-20 rounded-2xl bg-slate-600 text-xl font-extrabold">✖ STOP</button></div>
             : <div className="mt-4 rounded-2xl bg-slate-800 p-4 text-center space-y-3">
               <div className="text-xl">How many did you make in this batch? <span className="text-slate-400">({rem(o)} still owed)</span></div>
@@ -107,32 +129,24 @@ function Cnc() {
                 <button onClick={() => setDone({ id: o.id, qty: Math.max(1, d.qty - 1) })} className="w-24 h-20 rounded-xl bg-slate-700 text-4xl font-bold">−</button>
                 <span className="text-7xl font-extrabold w-40">{d.qty}</span>
                 <button onClick={() => setDone({ id: o.id, qty: d.qty + 1 })} className="w-24 h-20 rounded-xl bg-slate-700 text-4xl font-bold">+</button></div>
+              <label className="block text-left"><span className="block text-sm font-semibold text-slate-300 mb-1">Note for toolroom (optional)</span>
+                <input className="h-14 rounded-xl bg-slate-900 border-2 border-slate-700 px-3 text-lg w-full" placeholder="e.g. 3 pcs are 0.5 mm short" value={doneNote} onChange={e => setDoneNote(e.target.value)}/></label>
               <div className="text-sm text-slate-400">Anything not made stays in the queue. Only the toolroom can close the balance.</div>
               <div className="flex gap-3"><button onClick={finish} className="flex-1 h-20 rounded-2xl bg-green-600 text-xl font-extrabold">✔ CONFIRM · READY TO DISPATCH</button>
                 <button onClick={() => setDone(null)} className="px-6 rounded-2xl bg-slate-700 text-lg">Cancel</button></div></div>}
         </div>; })()}
-
-      {urg.length > 0 && <section className="space-y-2"><h2 className="text-lg font-bold text-red-400">🔴 Urgent · {urg.length} tool{urg.length > 1 ? 's' : ''} · {pcs(urg)} pcs</h2>
-        {groupBy(oldest(urg), gkey).map(row)}</section>}
-
-      {days.map(([k, list]) => { const closed = !!shut[k]; return <section key={k} className="space-y-2">
-        <button onClick={() => setShut({ ...shut, [k]: !closed })} className="w-full min-h-14 flex items-center justify-between rounded-xl bg-slate-800 px-4 text-left">
-          <span className="text-lg font-bold">{dayLabel(k)} <span className="text-slate-400 font-normal">· {groupBy(list, gkey).length} order{groupBy(list, gkey).length > 1 ? 's' : ''} · {pcs(list)} pcs pending</span></span><span>{closed ? '▼' : '▲'}</span></button>
-        {!closed && groupBy(list, gkey).map(row)}</section>; })}
-      {!waiting.length && !running && <p className="text-2xl text-slate-500 py-20 text-center">No orders. New ones appear here instantly.</p>}</>}
+      <div className={`grid gap-4 ${facs.length > 1 ? 'lg:grid-cols-3' : ''}`}>{facs.map(column)}</div></>}
 
     {tab === 'ready' && <div className="space-y-3">
       <p className="text-slate-400">Made and waiting at your place. They leave this list once the plant confirms receipt. <b className="text-slate-100">{ready.reduce((a, d) => a + d.qty_made, 0)} pcs</b> waiting.</p>
-      {!ready.length && <p className="text-2xl text-slate-500 py-16 text-center">Nothing waiting. Everything made has reached the plant.</p>}
-      {newest(groupBy(ready, d => gkey(d.ord!))).map(dcard)}</div>}
+      {fcols(ready)}</div>}
 
     {tab === 'history' && <div className="space-y-3">
       <div className="flex gap-2 flex-wrap items-center">{([[1, 'Today'], [7, '7 days'], [30, '30 days'], [0, 'All']] as const).map(([d, l]) =>
         <button key={d} onClick={() => setHd(d)} className={`px-5 h-12 rounded-lg ${hd === d ? 'bg-amber-500 text-slate-950 font-bold' : 'bg-slate-800'}`}>{l}</button>)}
-        <span className="ml-auto text-slate-400">Total made: <b className="text-slate-100 text-xl">{hlist.reduce((a, d) => a + d.qty_made, 0)}</b></span></div>
+        <span className="ml-auto text-slate-400">{FACTORIES.map(f => `${f} ${hlist.filter(d => d.factory_id === f).reduce((a, d) => a + d.qty_made, 0)}`).join(' · ')} · Total made <b className="text-slate-100 text-xl">{hlist.reduce((a, d) => a + d.qty_made, 0)}</b></span></div>
       <input className="h-14 rounded-xl bg-slate-900 border-2 border-slate-700 px-3 text-xl w-full" placeholder="Search by roller size" value={hs} onChange={e => setHs(e.target.value)}/>
-      {!hlist.length && <p className="text-xl text-slate-500 py-10 text-center">Nothing made in this period.</p>}
-      {newest(groupBy(hlist, d => gkey(d.ord!))).map(dcard)}</div>}
+      {fcols(hlist)}</div>}
   </div>);
 }
 

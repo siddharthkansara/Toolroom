@@ -1,104 +1,139 @@
 'use client';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { supabase } from '@/lib/supabase';
 import { Guard } from '@/lib/auth';
-import { useOrders, dt, SEL } from '@/lib/useOrders';
-import { TOOL_LABEL, type OrderFull, type Delivery } from '@/types/database';
+import { useOrders, dt, SEL, DSEL } from '@/lib/useOrders';
+import { FACTORIES, FCHIP, mname as mcode, rollerLabel } from '@/lib/factories';
+import { TOOL_LABEL, type OrderFull, type DeliveryFull, type Delivery } from '@/types/database';
 
 const fd = (d: string | null) => (d ? new Date(d).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata', dateStyle: 'medium', timeStyle: 'short' }) : '');
 const kind = (o: OrderFull) => (o.tooling ? TOOL_LABEL[o.tooling.tool_type] : o.custom_tool_name || 'Other tool');
 const tname = (o: OrderFull) => (o.tooling ? `${TOOL_LABEL[o.tooling.tool_type]} ${o.tooling.batta_code ?? ''}`.trim() : o.custom_tool_name || 'Other tool');
-const ym = (x: string) => { const d = new Date(x); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`; };
+const pad = (n: number) => String(n).padStart(2, '0');
+const ym = (x: string) => { const d = new Date(x); return `${d.getFullYear()}-${pad(d.getMonth() + 1)}`; };
+const dayStr = (x: string) => { const d = new Date(x); return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`; };
 const rem = (o: OrderFull) => Math.max(0, o.quantity - (o.qty_made ?? 0));
 const stText = (o: OrderFull) => o.status === 'CLOSED' ? ((o.qty_made ?? 0) >= o.quantity ? 'Completed' : 'Closed short')
-  : o.status === 'ON_LATHE' ? 'On lathe' : (o.qty_made ?? 0) > 0 ? 'Partly made' : 'Queued';
+  : o.status === 'ON_LATHE' ? 'In progress' : (o.qty_made ?? 0) > 0 ? 'Partly made' : 'Queued';
 const card = 'bg-slate-900 rounded-xl p-5 border border-slate-800';
+const FTag = ({ f }: { f: string }) => <span className={`${FCHIP[f] ?? 'bg-slate-600'} text-white rounded px-2 py-0.5 text-sm font-bold`}>{f}</span>;
+
+function download(head: string[], rows: unknown[][], name: string) {
+  const esc = (v: unknown) => `"${String(v ?? '').replace(/"/g, '""')}"`;
+  const csv = '\uFEFF' + [head, ...rows].map(r => r.map(esc).join(',')).join('\r\n');
+  const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv' })); a.download = name; a.click();
+}
+async function pageAll<T>(fetchPage: (from: number, to: number) => PromiseLike<{ data: unknown }>): Promise<T[]> {   // Supabase returns max 1000 rows per request
+  let all: T[] = [];
+  for (let i = 0; ; i += 1000) { const { data } = await fetchPage(i, i + 999); const d = (data ?? []) as T[]; if (!d.length) break; all = all.concat(d); if (d.length < 1000) break; }
+  return all;
+}
 
 function Dashboard() {
   const { orders, deliveries } = useOrders();
-  const [days, setDays] = useState(1);
+  const [allD, setAllD] = useState<DeliveryFull[]>([]);   // every batch ever made, so totals are exact
+  const [days, setDays] = useState(0);
+  const [fsel, setFsel] = useState<string | null>(null);
   const [month, setMonth] = useState(() => ym(new Date().toISOString()));
   const [from, setFrom] = useState(''); const [to, setTo] = useState('');
 
-  async function exportCsv() {
-    let all: OrderFull[] = []; let dl: Delivery[] = [];
-    for (let i = 0; ; i += 1000) {   // page through everything (Supabase returns max 1000 rows per request)
-      const { data } = await supabase.from('tool_orders').select(SEL).order('created_at').range(i, i + 999);
-      if (!data?.length) break; all = all.concat(data as unknown as OrderFull[]); if (data.length < 1000) break;
-    }
-    for (let i = 0; ; i += 1000) {
-      const { data } = await supabase.from('deliveries').select('*').order('made_at').range(i, i + 999);
-      if (!data?.length) break; dl = dl.concat(data as unknown as Delivery[]); if (data.length < 1000) break;
-    }
+  useEffect(() => { (async () => setAllD(await pageAll<DeliveryFull>((a, b) => supabase.from('deliveries').select(DSEL).order('made_at').range(a, b))))(); }, [deliveries]);
+
+  const inRange = (x: string) => (!from || dayStr(x) >= from) && (!to || dayStr(x) <= to);
+
+  async function exportMade(f: string | null) {   // "Toolings completed": one row per batch the CNC operator confirmed
+    let q = supabase.from('deliveries').select(DSEL); if (f) q = q.eq('factory_id', f);
+    const all = await pageAll<DeliveryFull>((a, b) => q.order('made_at').range(a, b));
+    const rows = all.filter(d => d.ord && inRange(d.made_at)).map(d => { const o = d.ord!;
+      return [d.factory_id, rollerLabel(o.factory_id, o.roller?.roller_size ?? ''), o.roller?.roller_size, o.roller?.customer_drg, o.roller?.party_name, mcode(o.machine_id), kind(o), o.tooling?.batta_code, o.slip_no,
+        o.quantity, d.qty_made, fd(d.made_at), d.qty_received, fd(d.received_at), d.status === 'RECEIVED' ? 'Received' : 'At CNC, not received yet', d.note, o.notes]; });
+    download(['Factory', 'Factory - Roller Size', 'Roller Size', 'Drawing No', 'Party', 'Header Machine', 'Tool', 'Batta No', 'Slip No', 'Qty Ordered', 'Qty Made (this batch)', 'Made At', 'Qty Received', 'Received At', 'Receipt Status', 'CNC Note', 'Toolroom Note'],
+      rows, `toolings-completed-${f ?? 'ALL'}-${new Date().toISOString().slice(0, 10)}.csv`);
+  }
+  async function exportOrders(f: string | null) {   // every order, including pending ones, with all its batches
+    let qo = supabase.from('tool_orders').select(SEL); if (f) qo = qo.eq('factory_id', f);
+    let qd = supabase.from('deliveries').select('*'); if (f) qd = qd.eq('factory_id', f);
+    const [all, dl] = await Promise.all([pageAll<OrderFull>((a, b) => qo.order('created_at').range(a, b)), pageAll<Delivery>((a, b) => qd.order('made_at').range(a, b))]);
     const by: Record<string, Delivery[]> = {}; dl.forEach(d => (by[d.order_id] ??= []).push(d));
-    const day = (x: string) => { const d = new Date(x); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`; };
-    all = all.filter(o => (!from || day(o.created_at) >= from) && (!to || day(o.created_at) <= to));
-    const head = ['Slip No', 'Ordered At', 'Machine', 'Roller Size', 'Drawing No', 'Party', 'Tool', 'Batta No', 'OD', 'Length', 'OD 2', 'Step', 'Custom Tool Dims', 'Priority', 'Rollers To Forge',
-      'Qty Ordered', 'Qty Made', 'Short (ordered-made)', 'Qty Received', 'Missing in transit (made-received)', 'Status', 'Closed At', 'Number of Batches', 'Batches'];
-    const rows = all.map(o => { const b = by[o.id] ?? [];
-      return [o.slip_no, fd(o.created_at), o.machine_id, o.roller?.roller_size, o.roller?.customer_drg, o.roller?.party_name, kind(o), o.tooling?.batta_code, o.tooling?.od_dim, o.tooling?.length_dim, o.tooling?.od2_dim, o.tooling?.step_depth_dim,
-        o.custom_dimensions, o.priority === 'URGENT_MACHINE_DOWN' ? 'Urgent' : 'Next morning', o.roller_qty, o.quantity, o.qty_made ?? 0, o.quantity - (o.qty_made ?? 0), o.qty_received ?? 0,
-        (o.qty_made ?? 0) - (o.qty_received ?? 0), stText(o), fd(o.closed_at), b.length,
-        b.map(d => `${d.qty_made} made ${fd(d.made_at)} -> ${d.status === 'RECEIVED' ? `${d.qty_received} received ${fd(d.received_at)}` : 'not received yet'}`).join(' | ')]; });
-    const esc = (v: unknown) => `"${String(v ?? '').replace(/"/g, '""')}"`;
-    const csv = '\uFEFF' + [head, ...rows].map(r => r.map(esc).join(',')).join('\r\n');
-    const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv' }));
-    a.download = `tool-orders-${new Date().toISOString().slice(0, 10)}.csv`; a.click();
+    const rows = all.filter(o => inRange(o.created_at)).map(o => { const b = by[o.id] ?? [];
+      return [o.factory_id, rollerLabel(o.factory_id, o.roller?.roller_size ?? ''), o.slip_no, fd(o.created_at), mcode(o.machine_id), o.roller?.customer_drg, o.roller?.party_name, kind(o), o.tooling?.batta_code,
+        o.tooling?.od_dim, o.tooling?.length_dim, o.tooling?.od2_dim, o.tooling?.step_depth_dim, o.custom_dimensions, URGENCY_LABEL[o.priority] ?? o.priority, o.roller_qty, o.quantity, o.qty_made ?? 0, o.quantity - (o.qty_made ?? 0),
+        o.qty_received ?? 0, (o.qty_made ?? 0) - (o.qty_received ?? 0), stText(o), fd(o.closed_at), b.length,
+        b.map(d => `${d.qty_made} made ${fd(d.made_at)} -> ${d.status === 'RECEIVED' ? `${d.qty_received} received ${fd(d.received_at)}` : 'not received yet'}${d.note ? ` [CNC note: ${d.note}]` : ''}`).join(' | '), o.notes]; });
+    download(['Factory', 'Factory - Roller Size', 'Slip No', 'Ordered At', 'Header Machine', 'Drawing No', 'Party', 'Tool', 'Batta No', 'OD', 'Length', 'OD 2', 'Step', 'Custom Tool Dims', 'Urgency', 'Rollers To Forge',
+      'Qty Ordered', 'Qty Made', 'Short (ordered-made)', 'Qty Received', 'Missing in transit (made-received)', 'Status', 'Closed At', 'Number of Batches', 'Batches', 'Toolroom Note'], rows, `tool-orders-${f ?? 'ALL'}-${new Date().toISOString().slice(0, 10)}.csv`);
   }
 
-  const today = new Date().toDateString();
-  const open = orders.filter(o => o.status === 'QUEUED' || o.status === 'ON_LATHE');
-  const lathe = open.filter(o => o.status === 'ON_LATHE');
-  const atCnc = deliveries.filter(d => d.status === 'READY').reduce((a, d) => a + d.qty_made, 0);
-  const stat = [['Machines waiting', new Set(open.map(o => o.machine_id)).size], ['Pieces still to make', open.reduce((a, o) => a + rem(o), 0)], ['On lathe now', lathe.length],
-    ['Pieces at CNC, not received', atCnc], ["Today's orders", orders.filter(o => new Date(o.created_at).toDateString() === today).length]];
-
+  const todayStr = new Date().toDateString();
   const cutoff = days ? (() => { const d = new Date(); d.setHours(0, 0, 0, 0); d.setDate(d.getDate() - (days - 1)); return +d; })() : 0;
-  const dm = deliveries.filter(d => d.ord && +new Date(d.made_at) >= cutoff);
-  const grp: Record<string, { drg: string | null; tools: Record<string, number>; made: number; recd: number }> = {};
-  dm.forEach(d => { const o = d.ord!; const g = (grp[o.roller?.roller_size ?? '—'] ??= { drg: o.roller?.customer_drg ?? null, tools: {}, made: 0, recd: 0 });
-    g.tools[kind(o)] = (g.tools[kind(o)] ?? 0) + d.qty_made; g.made += d.qty_made; g.recd += d.qty_received ?? 0; });
+  const dper = allD.filter(d => +new Date(d.made_at) >= cutoff);
+  const open = (o: OrderFull) => o.status === 'QUEUED' || o.status === 'ON_LATHE';
+  const rowFor = (f: string | null) => { const fo = orders.filter(o => !f || o.factory_id === f); const fa = allD.filter(d => !f || d.factory_id === f); const dp = dper.filter(d => !f || d.factory_id === f);
+    return { today: fo.filter(o => new Date(o.created_at).toDateString() === todayStr).length, toMake: fo.filter(open).reduce((a, o) => a + rem(o), 0), lathe: fo.filter(o => o.status === 'ON_LATHE').length,
+      atCnc: fa.filter(d => d.status === 'READY').reduce((a, d) => a + d.qty_made, 0), made: dp.reduce((a, d) => a + d.qty_made, 0), recd: dp.reduce((a, d) => a + (d.qty_received ?? 0), 0) }; };
+  const total = rowFor(null);
+  const lathe = orders.filter(o => o.status === 'ON_LATHE' && (!fsel || o.factory_id === fsel));
 
+  const grp: Record<string, { f: string; size: string; drg: string | null; tools: Record<string, number>; made: number; recd: number }> = {};
+  dper.filter(d => d.ord && (!fsel || d.factory_id === fsel)).forEach(d => { const o = d.ord!; const key = `${o.factory_id}|${o.roller?.roller_size ?? '—'}`;
+    const g = (grp[key] ??= { f: o.factory_id, size: o.roller?.roller_size ?? '—', drg: o.roller?.customer_drg ?? null, tools: {}, made: 0, recd: 0 });
+    g.tools[kind(o)] = (g.tools[kind(o)] ?? 0) + d.qty_made; g.made += d.qty_made; g.recd += d.qty_received ?? 0; });
   const rep: Record<string, OrderFull[]> = {};
-  orders.filter(o => ym(o.created_at) === month).forEach(o => (rep[o.roller?.roller_size ?? '—'] ??= []).push(o));
+  orders.filter(o => ym(o.created_at) === month && (!fsel || o.factory_id === fsel)).forEach(o => (rep[`${o.factory_id}|${o.roller?.roller_size ?? '—'}`] ??= []).push(o));
+  const chip = (on: boolean) => `px-4 py-2 rounded-lg ${on ? 'bg-amber-500 text-slate-950 font-bold' : 'bg-slate-800'}`;
+  const period = days === 0 ? 'all time' : days === 1 ? 'today' : `last ${days} days`;
 
   return (<div className="p-6 max-w-7xl mx-auto space-y-8">
-    <div className="grid grid-cols-2 md:grid-cols-5 gap-4">{stat.map(([k, v]) =>
-      <div key={k} className={card}><div className="text-slate-400">{k}</div><div className="text-5xl font-bold mt-1">{v}</div></div>)}</div>
+    <section><div className="flex items-center gap-2 flex-wrap mb-3"><h2 className="text-xl font-bold mr-3">Toolings completed · {period}</h2>
+      {([[1, 'Today'], [7, '7 days'], [14, '14 days'], [30, '30 days'], [0, 'All time']] as const).map(([d, l]) => <button key={d} onClick={() => setDays(d)} className={chip(days === d)}>{l}</button>)}</div>
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+        <div className={`${card} border-amber-500`}><div className="text-slate-400">Total Toolings Completed (all units)</div><div className="text-6xl font-extrabold mt-1">{total.made}</div><div className="text-sm text-slate-400 mt-1">received at plants: {total.recd}</div></div>
+        {FACTORIES.map(f => { const r = rowFor(f); return <div key={f} className={card}><div className="text-slate-400 flex items-center gap-2">Toolings Completed · <FTag f={f}/></div><div className="text-6xl font-extrabold mt-1">{r.made}</div><div className="text-sm text-slate-400 mt-1">received at plant: {r.recd}</div></div>; })}</div>
+      <p className="text-xs text-slate-500 mt-2">“Completed” means pieces the CNC operator confirmed as made. Each batch is counted on the day it was confirmed.</p></section>
 
-    <section className={card}><h2 className="text-xl font-bold mb-3">On the CNC lathe now</h2>
+    <section className={card}><h2 className="text-xl font-bold mb-3">Factories at a glance</h2>
+      <div className="overflow-x-auto"><table className="w-full text-sm"><thead><tr className="text-left text-slate-400"><th className="py-1">Factory</th><th>Orders today</th><th>Pcs still to make</th><th>In progress</th><th>Pcs at CNC, not received</th><th>Made ({period})</th><th>Received ({period})</th></tr></thead>
+        <tbody>{[...FACTORIES.map(f => [f, rowFor(f)] as const), ['Total', total] as const].map(([f, r]) => <tr key={f} className={`border-t border-slate-800 ${f === 'Total' ? 'font-bold' : ''}`}>
+          <td className="py-2">{f === 'Total' ? 'Total' : <FTag f={f}/>}</td><td>{r.today}</td><td>{r.toMake}</td><td>{r.lathe}</td><td>{r.atCnc}</td><td>{r.made}</td><td>{r.recd}</td></tr>)}</tbody></table></div></section>
+
+    <div className="flex gap-2 flex-wrap items-center"><span className="text-slate-400">Show:</span>{[null, ...FACTORIES].map(f => <button key={f ?? 'all'} onClick={() => setFsel(f)} className={chip(fsel === f)}>{f ?? 'All factories'}</button>)}</div>
+
+    <section className={card}><h2 className="text-xl font-bold mb-3">In progress on the CNC lathe</h2>
       {!lathe.length && <p className="text-slate-500">Lathe is idle.</p>}
       <div className="grid md:grid-cols-2 gap-3">{lathe.map(o => <div key={o.id} className="bg-slate-800 rounded-lg p-3">
-        <div className="text-lg font-bold">{o.machine_id} · {o.roller?.roller_size ?? '—'} <span className="text-slate-400 font-normal">Drg {o.roller?.customer_drg ?? '—'}</span></div>
+        <div className="text-lg font-bold">{rollerLabel(o.factory_id, o.roller?.roller_size ?? '—')} <span className="text-slate-400 font-normal">Header {mcode(o.machine_id)} · Drg {o.roller?.customer_drg ?? '—'}</span></div>
         <div className="text-amber-300 text-lg">{tname(o)} · {rem(o)} to make <span className="text-slate-400">(ordered {o.quantity})</span></div>
-        <div className="text-sm text-slate-400">Ordered {dt(o.created_at)}{o.started_lathe_at ? ` · started ${dt(o.started_lathe_at)}` : ''}</div></div>)}</div></section>
+        <div className="text-sm text-slate-400">Requested {dt(o.created_at)}{o.started_lathe_at ? ` · started ${dt(o.started_lathe_at)}` : ''}</div></div>)}</div></section>
 
-    <section className={card}><div className="flex items-center gap-2 flex-wrap mb-3"><h2 className="text-xl font-bold mr-3">Tools made</h2>
-      {([[1, 'Today'], [7, '7 days'], [14, '14 days'], [30, '30 days'], [0, 'All time']] as const).map(([d, l]) =>
-        <button key={d} onClick={() => setDays(d)} className={`px-4 py-2 rounded-lg ${days === d ? 'bg-amber-500 text-slate-950 font-bold' : 'bg-slate-800'}`}>{l}</button>)}
-      <span className="ml-auto text-slate-400">Made <b className="text-slate-100 text-xl">{dm.reduce((a, d) => a + d.qty_made, 0)}</b> · Received <b className="text-sky-400 text-xl">{dm.reduce((a, d) => a + (d.qty_received ?? 0), 0)}</b></span></div>
-      {!dm.length && <p className="text-slate-500">Nothing made in this period.</p>}
-      <table className="w-full"><tbody>{Object.entries(grp).sort((a, b) => b[1].made - a[1].made).map(([s, g]) => <tr key={s} className="border-t border-slate-800">
-        <td className="py-2 font-bold">{s}</td><td className="text-slate-400">{g.drg ?? ''}</td>
+    <section className={card}><h2 className="text-xl font-bold mb-3">Toolings made by roller size · {period}</h2>
+      {!Object.keys(grp).length && <p className="text-slate-500">Nothing made in this period.</p>}
+      <table className="w-full"><tbody>{Object.values(grp).sort((a, b) => b.made - a.made).map(g => <tr key={`${g.f}|${g.size}`} className="border-t border-slate-800">
+        <td className="py-2 font-bold">{rollerLabel(g.f, g.size)}</td><td className="text-slate-400">{g.drg ?? ''}</td>
         <td>{Object.entries(g.tools).map(([k, n]) => `${n} ${k}`).join(' · ')}</td><td className="text-right font-bold">{g.made}</td><td className="text-right text-sky-400">{g.recd}</td></tr>)}</tbody></table>
-      <p className="text-xs text-slate-500 mt-2">Columns: roller size, drawing, tools made, total made, total received at plant. Each batch is counted on the day the CNC operator confirmed it.</p></section>
+      <p className="text-xs text-slate-500 mt-2">Columns: factory - roller size, drawing, tools made, total made, total received at plant.</p></section>
 
-    <section className={card}><h2 className="text-xl font-bold mb-3">Export orders (CSV)</h2>
-      <div className="flex gap-3 items-center flex-wrap"><label className="text-slate-400">From <input type="date" value={from} onChange={e => setFrom(e.target.value)} className="bg-slate-800 rounded-lg p-2 text-slate-100"/></label>
+    <section className={card}><h2 className="text-xl font-bold mb-3">Export (CSV, opens in Excel)</h2>
+      <div className="flex gap-3 items-center flex-wrap mb-4"><label className="text-slate-400">From <input type="date" value={from} onChange={e => setFrom(e.target.value)} className="bg-slate-800 rounded-lg p-2 text-slate-100"/></label>
         <label className="text-slate-400">To <input type="date" value={to} onChange={e => setTo(e.target.value)} className="bg-slate-800 rounded-lg p-2 text-slate-100"/></label>
-        <button onClick={exportCsv} className="px-6 py-3 rounded-lg bg-amber-500 text-slate-950 font-bold">⬇ Download</button>
-        <span className="text-slate-500 text-sm">Leave dates empty for all orders. One row per order, with every batch (made and received) listed in the last column.</span></div></section>
+        <span className="text-slate-500 text-sm">Leave dates empty for everything.</span></div>
+      <div className="font-semibold mb-2">Toolings completed (one row per batch the CNC confirmed)</div>
+      <div className="flex gap-2 flex-wrap mb-4"><button onClick={() => exportMade(null)} className="px-5 rounded-lg bg-amber-500 text-slate-950 font-bold">⬇ All Toolings Completed</button>
+        {FACTORIES.map(f => <button key={f} onClick={() => exportMade(f)} className="px-5 rounded-lg bg-slate-800">⬇ Download {f}</button>)}</div>
+      <div className="font-semibold mb-2">All orders, including pending (with every batch)</div>
+      <div className="flex gap-2 flex-wrap"><button onClick={() => exportOrders(null)} className="px-5 rounded-lg bg-amber-500 text-slate-950 font-bold">⬇ All Orders</button>
+        {FACTORIES.map(f => <button key={f} onClick={() => exportOrders(f)} className="px-5 rounded-lg bg-slate-800">⬇ Download {f}</button>)}</div></section>
 
     <section><div className="flex items-center gap-4 mb-3 flex-wrap"><h2 className="text-xl font-bold">Monthly orders by roller size</h2>
       <input type="month" value={month} onChange={e => setMonth(e.target.value)} className="bg-slate-800 rounded-lg p-2"/></div>
       {!Object.keys(rep).length && <p className="text-slate-500">No orders this month.</p>}
-      <div className="grid xl:grid-cols-2 gap-4">{Object.entries(rep).sort().map(([size, list]) => <div key={size} className={card}>
-        <div className="text-lg font-bold">{size} <span className="text-slate-400 font-normal">Drg {list[0].roller?.customer_drg ?? '—'} · ordered {list.reduce((a, o) => a + o.quantity, 0)} · made {list.reduce((a, o) => a + (o.qty_made ?? 0), 0)} · received {list.reduce((a, o) => a + (o.qty_received ?? 0), 0)}</span></div>
+      <div className="grid xl:grid-cols-2 gap-4">{Object.entries(rep).sort().map(([key, list]) => <div key={key} className={card}>
+        <div className="text-lg font-bold">{rollerLabel(list[0].factory_id, list[0].roller?.roller_size ?? '—')} <span className="text-slate-400 font-normal">Drg {list[0].roller?.customer_drg ?? '—'} · ordered {list.reduce((a, o) => a + o.quantity, 0)} · made {list.reduce((a, o) => a + (o.qty_made ?? 0), 0)} · received {list.reduce((a, o) => a + (o.qty_received ?? 0), 0)}</span></div>
         <table className="w-full mt-2 text-sm"><tbody>{[...list].sort((a, b) => +new Date(a.created_at) - +new Date(b.created_at)).map(o => <tr key={o.id} className="border-t border-slate-800">
-          <td className="py-1">{dt(o.created_at)}</td><td>{o.machine_id}</td><td>{tname(o)}</td><td className="text-right">{o.quantity}</td>
+          <td className="py-1">{dt(o.created_at)}</td><td>{mcode(o.machine_id)}</td><td>{tname(o)}</td><td className="text-right">{o.quantity}</td>
           <td className="text-right text-green-400">{o.qty_made ?? '—'}</td><td className="text-right text-sky-400">{o.qty_received ?? '—'}</td><td className="text-right text-slate-400">{stText(o)}</td></tr>)}</tbody></table></div>)}</div>
-      <p className="text-xs text-slate-500 mt-2">Columns: date, machine, tool, ordered, made, received, status.</p></section>
+      <p className="text-xs text-slate-500 mt-2">Columns: requested, header, tool, ordered, made, received, status.</p></section>
   </div>);
 }
 
+const URGENCY_LABEL: Record<string, string> = { URGENT_MACHINE_DOWN: 'Breakdown / Line Down', URGENT: 'Urgent', BUFFER_NEXT_SHIFT: 'Normal' };
 export default function Page() { return <Guard allow={['owner']}><Dashboard/></Guard>; }
