@@ -21,10 +21,21 @@ const when = (d: string) => { const n = Date.now(); const k = dayKey(d);
 const groupBy = <T,>(list: T[], key: (x: T) => string) => { const m: Record<string, T[]> = {}; list.forEach(x => (m[key(x)] ??= []).push(x)); return Object.entries(m); };
 const FTag = ({ f, big }: { f: string; big?: boolean }) => <span className={`${FCHIP[f] ?? 'bg-slate-600'} text-white rounded-lg font-extrabold ${big ? 'px-4 py-1 text-2xl' : 'px-2 py-0.5 text-sm'}`}>{f}</span>;
 
+// circular progress for the overall figure
+function Ring({ pct }: { pct: number | null }) {
+  const r = 40, c = 2 * Math.PI * r, p = pct ?? 0;
+  return (<svg viewBox="0 0 100 100" className="w-28 h-28 shrink-0" role="img" aria-label={`Overall progress ${p}%`}>
+    <circle cx="50" cy="50" r={r} fill="none" strokeWidth="12" className="stroke-current text-slate-500" opacity=".3"/>
+    <circle cx="50" cy="50" r={r} fill="none" strokeWidth="12" strokeLinecap="round" strokeDasharray={`${(c * p) / 100} ${c}`} transform="rotate(-90 50 50)" className="stroke-current text-green-500"/>
+    <text x="50" y="50" textAnchor="middle" dominantBaseline="central" fontSize="20" fontWeight="800" className="fill-current">{pct == null ? '—' : `${p}%`}</text></svg>);
+}
+
 function Cnc() {
   const { orders, deliveries, reload } = useOrders();
   const [tab, setTab] = useState<'queue' | 'ready' | 'history'>('queue');
   const [fsel, setFsel] = useState<string | null>(null);
+  const [win, setWin] = useState<'today' | 'week' | 'month'>('month');
+  const [showProg, setShowProg] = useState(false);
   const [done, setDone] = useState<{ id: string; qty: number } | null>(null); const [doneNote, setDoneNote] = useState('');
   const [openB, setOpenB] = useState<Record<string, boolean>>({});
   const [hist, setHist] = useState<DeliveryFull[]>([]); const [hd, setHd] = useState(7); const [hs, setHs] = useState('');
@@ -42,6 +53,16 @@ function Cnc() {
   const running = orders.find(o => o.status === 'ON_LATHE');   // one job at a time on the lathe
   const waiting = orders.filter(o => o.status === 'QUEUED');
   const pcs = (l: OrderFull[]) => l.reduce((a, o) => a + rem(o), 0);
+  // Progress = pieces made / pieces ordered, for orders placed in the chosen window. Balance the toolroom closed short is not counted against the CNC.
+  const todayK = dayKey(new Date().toISOString());
+  const startK = win === 'today' ? todayK : win === 'month' ? todayK.slice(0, 8) + '01'
+    : (() => { const d = new Date(todayK + 'T00:00:00'); d.setDate(d.getDate() - ((d.getDay() + 6) % 7)); return d.toLocaleDateString('en-CA'); })();
+  const eff = (o: OrderFull) => (o.status === 'CLOSED' ? (o.qty_made ?? 0) : o.quantity);
+  const progress = (l: OrderFull[]) => { const ord = l.reduce((a, o) => a + eff(o), 0); const made = l.reduce((a, o) => a + Math.min(o.qty_made ?? 0, eff(o)), 0);
+    return { ord, made, pct: ord ? Math.round((made / ord) * 100) : null }; };
+  const inWin = orders.filter(o => dayKey(o.created_at) >= startK);
+  const pAll = progress(inWin);
+  const winLabel = { today: 'today', week: 'this week', month: 'this month' }[win];
   const batchesOf = (f: string) => groupBy(waiting.filter(o => o.factory_id === f), gkey)
     .map(([k, items]) => ({ k, items: items.sort((a, b) => a.slip_no - b.slip_no) }))
     .sort((a, b) => cmpQueue(a.items[0], b.items[0]));   // Breakdown > Urgent > Normal, then oldest first
@@ -52,17 +73,33 @@ function Cnc() {
   const cutoff = hd ? (() => { const d = new Date(); d.setHours(0, 0, 0, 0); d.setDate(d.getDate() - (hd - 1)); return +d; })() : 0;
   const hlist = hist.filter(d => d.ord && (!fsel || d.factory_id === fsel) && +new Date(d.made_at) >= cutoff && (d.ord.roller?.roller_size ?? '').toLowerCase().includes(hs.trim().toLowerCase()));
 
+  // logs one lathe cycle; a failed log never blocks the operator
+  async function logRun(o: OrderFull | undefined, action: 'COMPLETED' | 'STOPPED', qty: number | null) {
+    if (!o?.started_lathe_at) return;   // no start time, nothing to measure
+    const ended = new Date();
+    const secs = Math.max(0, Math.round((+ended - +new Date(o.started_lathe_at)) / 1000));
+    const { error } = await supabase.from('lathe_activity_logs').insert({
+      order_id: o.id, factory_id: o.factory_id, roller_size: o.roller?.roller_size ?? null, tool_type: o.tooling?.tool_type ?? 'OTHER',
+      action, started_at: o.started_lathe_at, ended_at: ended.toISOString(), duration_seconds: secs, qty_made: qty });
+    if (error) alert('Saved, but the runtime log failed: ' + error.message);
+  }
   async function start(id: string) {   // In Progress
     const { error } = await supabase.from('tool_orders').update({ status: 'ON_LATHE', started_lathe_at: new Date().toISOString() }).eq('id', id);
     if (error) alert('Another job is already on the lathe.'); reload();
   }
   async function stop(id: string) {
-    await supabase.from('tool_orders').update({ status: 'QUEUED', started_lathe_at: null }).eq('id', id); setDone(null); reload();
+    const o = orders.find(x => x.id === id);   // read the start time before the order is reset
+    const { error } = await supabase.from('tool_orders').update({ status: 'QUEUED', started_lathe_at: null }).eq('id', id);
+    if (error) { alert('Could not stop: ' + error.message); return; }
+    await logRun(o, 'STOPPED', null);
+    setDone(null); reload();
   }
   async function finish() {   // Completed / Made: records this batch; anything not made stays in the queue
     if (!done) return;
+    const o = orders.find(x => x.id === done.id);   // complete_batch clears started_lathe_at, so capture it first
     const { error } = await rpc('complete_batch', { p_order: done.id, p_qty: done.qty, p_note: doneNote.trim() || null });
-    if (error) alert('Could not save: ' + error.message);
+    if (error) { alert('Could not save: ' + error.message); return; }
+    await logRun(o, 'COMPLETED', done.qty);
     setDone(null); reload();
   }
 
@@ -109,6 +146,21 @@ function Cnc() {
     <div className="flex gap-2 flex-wrap">{[null, ...FACTORIES].map(f => <button key={f ?? 'all'} onClick={() => setFsel(f)} className={`px-5 min-h-12 rounded-xl border-2 text-lg font-bold ${fsel === f ? 'border-amber-400 bg-amber-400/20' : 'border-slate-700 bg-slate-900'}`}>{f ?? 'All factories'}</button>)}</div>
 
     {tab === 'queue' && <>
+      {!showProg ? <button onClick={() => setShowProg(true)} className="w-full min-h-12 rounded-xl border-2 border-slate-700 bg-slate-900 px-4 py-2 flex items-center gap-3 flex-wrap text-left">
+        <span className="font-bold">Progress · {winLabel}</span>
+        <span className="text-xl font-extrabold">{pAll.pct == null ? '—' : `${pAll.pct}%`}</span>
+        <span className="text-slate-400 text-sm">{pAll.made} of {pAll.ord} pcs</span>
+        <span className="ml-auto text-slate-400">▼</span></button>
+      : <section className="rounded-2xl border-2 border-slate-700 bg-slate-900 p-4 space-y-3">
+        <div className="flex items-center gap-2 flex-wrap"><h2 className="text-lg font-bold mr-2">Progress · orders placed {winLabel}</h2>
+          {(['today', 'week', 'month'] as const).map(w => <button key={w} onClick={() => setWin(w)} className={`px-4 min-h-10 rounded-xl border-2 font-bold ${win === w ? 'border-amber-400 bg-amber-400/20' : 'border-slate-700 bg-slate-900'}`}>{{ today: 'Today', week: 'This week', month: 'This month' }[w]}</button>)}
+          <button onClick={() => setShowProg(false)} className="ml-auto px-4 min-h-10 rounded-xl border-2 border-slate-700 font-bold">Hide ▲</button></div>
+        {!inWin.length ? <p className="text-slate-500">No orders placed {winLabel}.</p> : <div className="flex items-center gap-4 flex-wrap">
+          <div className="flex items-center gap-3"><Ring pct={pAll.pct}/><div><div className="text-slate-400 text-sm">All factories</div><div className="text-2xl font-extrabold">{pAll.made} <span className="text-slate-400 text-base font-semibold">of {pAll.ord} pcs</span></div></div></div>
+          <div className="flex-1 min-w-60 space-y-3">{FACTORIES.map(f => { const x = progress(inWin.filter(o => o.factory_id === f));
+            return <div key={f}><div className="flex justify-between items-center text-sm mb-1"><span className="flex items-center gap-2"><FTag f={f}/>{x.made} of {x.ord} pcs</span><b className="text-base">{x.pct == null ? '—' : `${x.pct}%`}</b></div>
+              <div className="h-4 rounded-full bg-slate-800 overflow-hidden"><div className={`${FCHIP[f] ?? 'bg-slate-500'} h-4 rounded-full`} style={{ width: `${x.pct ?? 0}%` }}/></div></div>; })}</div></div>}
+        <p className="text-xs text-slate-500">Progress = pieces made ÷ pieces ordered, for orders placed {winLabel}. Pieces the toolroom closed short are not counted against you.</p></section>}
       {rushParts.length > 0 && <div className={`rounded-xl p-3 font-bold ${anyBreakdown ? 'bg-red-600 text-white' : 'bg-amber-500 text-slate-950'}`}>{anyBreakdown ? '🔴' : '🟠'} Rush waiting · {rushParts.join(' · ')}</div>}
       {running && (() => { const o = running; const d = done?.id === o.id ? done : null; const U = URGENCY[o.priority];
         return <div className="rounded-2xl bg-slate-900 border-4 border-blue-500 p-4">
@@ -146,7 +198,22 @@ function Cnc() {
         <button key={d} onClick={() => setHd(d)} className={`px-5 h-12 rounded-lg ${hd === d ? 'bg-amber-500 text-slate-950 font-bold' : 'bg-slate-800'}`}>{l}</button>)}
         <span className="ml-auto text-slate-400">{FACTORIES.map(f => `${f} ${hlist.filter(d => d.factory_id === f).reduce((a, d) => a + d.qty_made, 0)}`).join(' · ')} · Total made <b className="text-slate-100 text-xl">{hlist.reduce((a, d) => a + d.qty_made, 0)}</b></span></div>
       <input className="h-14 rounded-xl bg-slate-900 border-2 border-slate-700 px-3 text-xl w-full" placeholder="Search by roller size" value={hs} onChange={e => setHs(e.target.value)}/>
-      {fcols(hlist)}</div>}
+            <div className="overflow-x-auto rounded-xl border border-slate-800 bg-slate-900">
+        <table className="w-full text-left min-w-[820px]">
+          <thead className="bg-slate-800 text-slate-300 text-sm"><tr>{['Made on', 'Factory', 'Roller size', 'Tool', 'Batch made', 'Order qty', 'Made so far', 'At plant', 'Note'].map(h => <th key={h} className="px-3 py-2 whitespace-nowrap">{h}</th>)}</tr></thead>
+          <tbody>{hlist.map(d => <tr key={d.id} className="border-t border-slate-800">
+            <td className="px-3 py-2 whitespace-nowrap">{dt(d.made_at)}</td>
+            <td className="px-3 py-2"><FTag f={d.factory_id}/></td>
+            <td className="px-3 py-2 font-bold whitespace-nowrap">{rollerLabel(d.factory_id, d.ord!.roller?.roller_size ?? '—')}</td>
+            <td className="px-3 py-2 text-amber-300 font-semibold">{nm(d.ord!)}</td>
+            <td className="px-3 py-2 font-extrabold text-lg">{d.qty_made}</td>
+            <td className="px-3 py-2">{d.ord!.quantity}</td>
+            <td className="px-3 py-2">{d.ord!.qty_made ?? 0}</td>
+            <td className="px-3 py-2 whitespace-nowrap">{d.status === 'READY' ? '📦 still at CNC' : `✔ ${d.qty_received ?? '?'} received`}</td>
+            <td className="px-3 py-2 text-sm">{d.note ?? ''}</td></tr>)}
+            {!hlist.length && <tr><td colSpan={9} className="px-3 py-6 text-center text-slate-500">No batches in this period.</td></tr>}</tbody>
+          {hlist.length > 0 && <tfoot className="border-t-2 border-slate-700 font-extrabold"><tr><td className="px-3 py-2" colSpan={4}>Total</td><td className="px-3 py-2 text-lg">{hlist.reduce((a, d) => a + d.qty_made, 0)}</td><td colSpan={4}/></tr></tfoot>}
+        </table></div></div>}
   </div>);
 }
 

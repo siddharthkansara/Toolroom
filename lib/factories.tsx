@@ -2,7 +2,7 @@ export const FACTORIES = ['NIC', 'PEW', 'BABA'] as const;
 export const FCHIP: Record<string, string> = { NIC: 'bg-sky-600', PEW: 'bg-violet-600', BABA: 'bg-orange-600' };
 // machine ids look like 'PEW:HD-1'; show only 'HD-1'
 export const mname = (id: string) => (id.includes(':') ? id.split(':')[1] : id);
-export const FactoryTag = ({ f }: { f: string }) => <span className={`${FCHIP[f] ?? 'bg-slate-600'} text-white rounded px-2 py-0.5 text-sm font-bold`}>{f}</span>;
+export const FactoryTag = ({ f }: { f: string }) => <span className={`${FCHIP[f] ?? 'bg-slate-600'} text-blue rounded px-2 py-0.5 text-sm font-bold`}>{f}</span>;
 
 // ---- Phase 1 additions ----
 export type Factory = (typeof FACTORIES)[number];

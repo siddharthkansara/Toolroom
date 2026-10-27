@@ -42,7 +42,7 @@ export function Guard({ allow, children }: { allow: Role[]; children: React.Reac
   if (st.role === 'toolroom' && !st.factory) return <div className={centre}>This toolroom login has no factory assigned. Ask the owner.{logout}</div>;
 
   return (<Ctx.Provider value={{ role: st.role, factory: st.factory }}>
-    <div className="flex items-center justify-between gap-3 bg-slate-900 border-b border-slate-800 px-4 py-2 text-sm">
+    <div className="flex items-center justify-between gap-3 bg-slate-900 border-b border-slate-800 px-4 py-2 text-sm topbar">
       <div className="flex gap-3 items-center flex-wrap"><span className="text-slate-400">{st.email} · {st.role}{st.factory ? ` · ${st.factory}` : ''}</span>
         {st.role === 'owner' && (['/', '/cnc', '/dashboard'] as const).map((h, i) =>
           <Link key={h} href={h} className="px-3 py-1 rounded-lg bg-slate-800">{['Toolroom', 'CNC', 'Dashboard'][i]}</Link>)}</div>

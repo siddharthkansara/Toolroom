@@ -7,7 +7,7 @@ import { FACTORIES, mname as mcode, machineId, rollerLabel } from '@/lib/factori
 import { URGENCY } from '@/lib/urgency';
 import { groupByRoller, RollerAccordion } from '@/lib/rollerGroups';
 import { useOrders, chime, dt, SEL, gkey, uuid } from '@/lib/useOrders';
-import { TOOL_LABEL, type HeaderMachine, type ProductionRun, type RollerMaster, type ToolingMaster, type ToolType, type Priority, type OrderFull, type DeliveryFull } from '@/types/database';
+import { TOOL_LABEL, type HeaderMachine, type ProductionRun, type RollerMaster, type ToolingMaster, type ToolType, type Priority, type OrderFull, type DeliveryFull, type Delivery } from '@/types/database';
 
 type Rec = { code: string; od: string; len: string; od2: string; step: string };
 type Other = { name: string; dims: string; qty: number; note: string };
@@ -20,6 +20,8 @@ const LAYOUT: Record<string, [keyof Rec, string][][]> = {
 const PRIO_TXT: Record<Priority, [string, string]> = { BUFFER_NEXT_SHIFT: ['🟡 Normal', 'Next morning, buffer stock'], URGENT: ['🟠 Urgent', 'Needed today'], URGENT_MACHINE_DOWN: ['🔴 Breakdown', 'Machine / line is down'] };
 const PRIO_ON: Record<Priority, string> = { BUFFER_NEXT_SHIFT: 'border-slate-400 bg-slate-500/20', URGENT: 'border-amber-500 bg-amber-400/20', URGENT_MACHINE_DOWN: 'border-red-500 bg-red-600/30' };
 const ST: Record<string, string> = { QUEUED: 'Queued', ON_LATHE: 'On lathe', IN_TRANSIT: 'Ready to dispatch', RECEIVED: 'Received', HEAT_TREAT: 'Heat treat', READY: 'Ready', CLOSED: 'Closed' };
+const ist0 = (y: number, m: number, d: number) => new Date(Date.UTC(y, m, d) - 330 * 60000).toISOString();   // midnight IST
+  const MON = ['April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December', 'January', 'February', 'March'];
 const ACTIVE = ['QUEUED', 'ON_LATHE'];
 const COLS = [['QUEUED', 'Queued', 'border-slate-500'], ['ON_LATHE', 'On lathe (10 km)', 'border-blue-500'],
   ['READY', 'Ready to Dispatch', 'border-amber-500'], ['RECEIVED', 'Received (last 7 days)', 'border-green-500']] as const;
@@ -86,25 +88,46 @@ function Kiosk() {
   const pending = (t: ToolType) => mine.filter(o => ACTIVE.includes(o.status) && o.tooling?.tool_type === t && o.roller_id === rid).reduce((a, o) => a + o.quantity - (o.qty_made ?? 0), 0);
   const picked = STD.filter(t => (qtys[t] ?? 0) > 0), otherPicked = others.filter(o => o.qty > 0);
   const lines = picked.length + otherPicked.length;
-  useEffect(() => {   // last 365 days of orders for the All Orders tab (paged: Supabase returns max 1000 rows per request)
-    if (tab !== 'all') return;
-    (async () => {
-      const since = new Date(Date.now() - 365 * 864e5).toISOString(); let all: OrderFull[] = [];
-      for (let i = 0; ; i += 1000) {
-        const { data } = await supabase.from('tool_orders').select(SEL).gte('created_at', since).eq('factory_id', factory).order('created_at', { ascending: false }).range(i, i + 999);
-        if (!data?.length) break; all = all.concat(data as unknown as OrderFull[]); if (data.length < 1000) break;
-      }
-      setYear(all);
-    })();
-  }, [tab, orders.length, factory]);
+  
+  const nowIST = new Date(Date.now() + 330 * 60000);
+const fy0 = nowIST.getUTCMonth() >= 3 ? nowIST.getUTCFullYear() : nowIST.getUTCFullYear() - 1;   // current financial year
+const [fy, setFy] = useState(fy0);
+const [per, setPer] = useState<string>(String((nowIST.getUTCMonth() + 9) % 12));   // '0'..'11' = Apr..Mar, 'y' = whole year, 'c' = custom dates
+const [dFrom, setDFrom] = useState(''); const [dTo, setDTo] = useState('');
+const [dels, setDels] = useState<Record<string, Delivery[]>>({});
+let pStart = '', pEnd = '';
+if (per === 'y') { pStart = ist0(fy, 3, 1); pEnd = ist0(fy + 1, 3, 1); }
+else if (per === 'c') { if (dFrom && dTo && dFrom <= dTo) { const [a, b, c] = dFrom.split('-').map(Number), [x, y, z] = dTo.split('-').map(Number); pStart = ist0(a, b - 1, c); pEnd = ist0(x, y - 1, z + 1); } }
+else { const i = +per, cm = (i + 3) % 12, cy = i < 9 ? fy : fy + 1; pStart = ist0(cy, cm, 1); pEnd = ist0(cy, cm + 1, 1); }
+
+  useEffect(() => {
+  if (tab !== 'all') return;
+  if (!pStart) { setYear(p => (p.length ? [] : p)); setDels(p => (Object.keys(p).length ? {} : p)); return; }
+  (async () => {
+    let all: OrderFull[] = [];
+    for (let i = 0; ; i += 1000) {
+      const { data } = await supabase.from('tool_orders').select(SEL).gte('created_at', pStart).lt('created_at', pEnd).eq('factory_id', factory).order('created_at', { ascending: false }).range(i, i + 999);
+      if (!data?.length) break; all = all.concat(data as unknown as OrderFull[]); if (data.length < 1000) break;
+    }
+    const m: Record<string, Delivery[]> = {};
+    for (let i = 0; i < all.length; i += 100) {
+      const { data } = await supabase.from('deliveries').select('*').in('order_id', all.slice(i, i + 100).map(o => o.id));
+      (data as unknown as Delivery[] | null)?.forEach(d => (m[d.order_id] ??= []).push(d));
+    }
+    setYear(all); setDels(m);
+  })();
+}, [tab, all.orders, all.deliveries, factory, pStart, pEnd]);
   const kindOf = (o: OrderFull) => (o.tooling ? TOOL_LABEL[o.tooling.tool_type] : o.custom_tool_name || 'Other tool');
   const dy = (d: string) => new Date(d).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata', day: '2-digit', month: 'short', year: 'numeric', hour: 'numeric', minute: '2-digit', hour12: true });
-  const byRoller: Record<string, OrderFull[]> = {};
-  year.forEach(o => (byRoller[o.roller?.roller_size ?? '—'] ??= []).push(o));
-  const groups = Object.entries(byRoller).filter(([s]) => s.toLowerCase().includes(sq.trim().toLowerCase()))
-    .sort((a, b) => +new Date(b[1][0].created_at) - +new Date(a[1][0].created_at));
-  const allTotals: Record<string, number> = {};
-  groups.forEach(([, l]) => l.forEach(o => { allTotals[kindOf(o)] = (allTotals[kindOf(o)] ?? 0) + o.quantity; }));
+  
+  const sqq = sq.trim().toLowerCase();
+const rows = year.filter(o => !sqq || (o.roller?.roller_size ?? '').toLowerCase().includes(sqq));
+const sum = (f: (o: OrderFull) => number) => rows.reduce((a, o) => a + f(o), 0);
+const allTotals: Record<string, number> = {};
+rows.forEach(o => { allTotals[kindOf(o)] = (allTotals[kindOf(o)] ?? 0) + o.quantity; });
+const periodLabel = per === 'y' ? `FY ${fy}-${String(fy + 1).slice(2)}` : per === 'c' ? (dFrom && dTo ? `${dFrom} to ${dTo}` : 'pick both dates') : `${MON[+per]} ${+per < 9 ? fy : fy + 1}`;
+  const recvOn = (o: OrderFull) => { const r = (dels[o.id] ?? []).filter(d => d.status === 'RECEIVED' && d.received_at).map(d => d.received_at as string).sort(); return r.length ? r[r.length - 1] : null; };
+  const atCnc = (o: OrderFull) => (dels[o.id] ?? []).filter(d => d.status === 'READY').reduce((a, d) => a + d.qty_made, 0);
   const viewItems = view ? orders.filter(o => gkey(o) === view).sort((a, b) => a.slip_no - b.slip_no) : [];
   const batches = Object.values(mine.reduce((a, o) => { (a[gkey(o)] ??= []).push(o); return a; }, {} as Record<string, OrderFull[]>));
   const reset = () => { setQtys({}); setNotes({}); setOthers([]); setPrio(null); };
@@ -301,22 +324,41 @@ function Kiosk() {
         <div className="text-slate-300">{b.map(o => `${kindOf(o)} ×${o.quantity}`).join(', ')}</div>
         <div className="text-xs text-amber-400">{[...new Set(b.map(o => stOf(o)))].join(' · ')} · tap to view</div></button>; })}</div>
     </aside></div>) : tab === 'all' ? (<div className="space-y-4">
-      <div className="bg-slate-900 rounded-xl p-4 border border-slate-800">
-        <div className="text-slate-400 mb-1">Tools ordered, last 12 months{sq.trim() ? ` · size “${sq.trim()}”` : ' · all roller sizes'}</div>
-        <div className="flex flex-wrap gap-x-6 gap-y-1 text-xl">{Object.entries(allTotals).map(([k, n]) => <span key={k}><b className="text-3xl text-amber-300">{n}</b> {k}</span>)}
-          {!groups.length && <span className="text-slate-500">No orders found.</span>}</div></div>
-      <input className={inp} placeholder="Search by roller size" value={sq} onChange={e => setSq(e.target.value)}/>
-      <div className="grid md:grid-cols-2 gap-3">{groups.map(([size, list]) => { const per: Record<string, { n: number; last: OrderFull }> = {};
-        list.forEach(o => { const k = kindOf(o); per[k] = { n: (per[k]?.n ?? 0) + o.quantity, last: per[k]?.last ?? o }; });
-        return <div key={size} className="bg-slate-900 rounded-xl p-4 border border-slate-800">
-          <button onClick={() => setOpen(open === size ? null : size)} className="w-full text-left min-h-12">
-            <div className="text-2xl font-bold">{rollerLabel(factory, size)} <span className="text-slate-400 text-base font-normal">Drg {list[0].roller?.customer_drg ?? '—'}{list[0].roller?.party_name ? ` · ${list[0].roller.party_name}` : ''}</span></div>
-            <div className="text-slate-400 text-sm">Last order {dy(list[0].created_at)} · {list.length} orders</div></button>
-          <div className="mt-2 space-y-1">{Object.entries(per).map(([k, v]) => <div key={k} className="flex justify-between gap-2">
-            <span className="font-semibold">{k}</span><span className="text-slate-300 text-right">last {dy(v.last.created_at)} · {v.last.quantity} pcs <span className="text-slate-500">(total {v.n})</span></span></div>)}</div>
-          {open === size && <div className="mt-3 border-t border-slate-800 pt-2 space-y-1 text-sm max-h-72 overflow-y-auto">{list.map(o => <div key={o.id} className="flex justify-between gap-2">
-            <span>{dy(o.created_at)} · {tname(o)}</span><span>{o.quantity} pcs{o.qty_made != null ? ` · made ${o.qty_made}` : ''}{o.qty_received != null ? ` · received ${o.qty_received}` : ''} · {stOf(o)}</span></div>)}</div>}</div>; })}</div>
-    </div>) : (<div>
+  <div className="grid sm:grid-cols-3 gap-3">
+    <label className="block"><span className="block text-sm font-semibold text-slate-300 mb-1">Financial year</span>
+      <select className={inp} value={fy} onChange={e => setFy(+e.target.value)}>{[fy0 - 2, fy0 - 1, fy0].map(y => <option key={y} value={y}>FY {y}-{String(y + 1).slice(2)} (Apr {y} – Mar {y + 1})</option>)}</select></label>
+    <label className="block"><span className="block text-sm font-semibold text-slate-300 mb-1">Month</span>
+      <select className={inp} value={per} onChange={e => setPer(e.target.value)}>
+        {MON.map((m, i) => <option key={i} value={String(i)}>{m} {i < 9 ? fy : fy + 1}</option>)}
+        <option value="y">Whole financial year</option><option value="c">Between two dates…</option></select></label>
+    <label className="block"><span className="block text-sm font-semibold text-slate-300 mb-1">Roller size</span>
+      <input className={inp} placeholder="Type to search" value={sq} onChange={e => setSq(e.target.value)}/></label>
+  </div>
+  {per === 'c' && <div className="grid grid-cols-2 gap-3">
+    <label className="block"><span className="block text-sm font-semibold text-slate-300 mb-1">From date</span><input type="date" className={inp} value={dFrom} onChange={e => setDFrom(e.target.value)}/></label>
+    <label className="block"><span className="block text-sm font-semibold text-slate-300 mb-1">To date</span><input type="date" className={inp} value={dTo} onChange={e => setDTo(e.target.value)}/></label></div>}
+  <div className="bg-slate-900 rounded-xl p-4 border border-slate-800">
+    <div className="text-slate-400 mb-1">Tools ordered · {periodLabel}{sq.trim() ? ` · size “${sq.trim()}”` : ' · all roller sizes'} · {rows.length} line{rows.length === 1 ? '' : 's'}</div>
+    <div className="flex flex-wrap gap-x-6 gap-y-1 text-xl">{Object.entries(allTotals).map(([k, n]) => <span key={k}><b className="text-3xl text-amber-300">{n}</b> {k}</span>)}
+      {!rows.length && <span className="text-slate-500">No orders found.</span>}</div></div>
+  <div className="overflow-x-auto rounded-xl border border-slate-800 bg-slate-900">
+    <table className="w-full text-left min-w-[760px]">
+      <thead className="bg-slate-800 text-slate-300 text-sm"><tr>{['Ordered on', 'Roller size', 'Tool', 'Ordered', 'Made', 'Received','Received on', 'Status'].map(h => <th key={h} className="px-3 py-2 whitespace-nowrap">{h}</th>)}</tr></thead>
+      <tbody>{rows.map(o => <tr key={o.id} className="border-t border-slate-800">
+        <td className="px-3 py-2 whitespace-nowrap">{dy(o.created_at)}</td>
+        <td className="px-3 py-2 font-bold whitespace-nowrap">{rollerLabel(factory, o.roller?.roller_size ?? '—')}</td>
+        <td className="px-3 py-2">{tname(o)}</td>
+        <td className="px-3 py-2 font-bold">{o.quantity}</td>
+        <td className="px-3 py-2">{o.qty_made ?? 0}</td>
+        <td className="px-3 py-2">{o.qty_received ?? '—'}</td>
+        <td className="px-3 py-2 whitespace-nowrap">{recvOn(o) ? dy(recvOn(o)!) : '—'}</td>
+        <td className="px-3 py-2 whitespace-nowrap">{stOf(o)}{atCnc(o) > 0 && <div className="text-amber-300 text-sm font-semibold">📦 {atCnc(o)} made, waiting at CNC</div>}</td></tr>)}
+        {!rows.length && <tr><td colSpan={8} className="px-3 py-6 text-center text-slate-500">No orders found for this period.</td></tr>}</tbody>
+      {rows.length > 0 && <tfoot className="border-t-2 border-slate-700 font-extrabold"><tr><td className="px-3 py-2" colSpan={3}>Total</td>
+        <td className="px-3 py-2">{sum(o => o.quantity)}</td><td className="px-3 py-2">{sum(o => o.qty_made ?? 0)}</td><td className="px-3 py-2">{sum(o => o.qty_received ?? 0)}</td><td/>
+        <td className="px-3 py-2 text-amber-300 text-sm">{sum(atCnc) > 0 ? `📦 ${sum(atCnc)} waiting at CNC` : ''}</td></tr></tfoot>}
+    </table></div>
+</div>) : (<div>
       <div className="flex gap-2 overflow-x-auto pb-3">{[null, ...machines.map(m => m.id)].map(id =>
         <button key={id ?? 'all'} onClick={() => setFilter(id)} className={`px-6 rounded-full border-2 text-xl whitespace-nowrap ${filter === id ? on : off}`}>{id ? mcode(id) : 'All'}</button>)}</div>
       <div className="grid grid-cols-2 xl:grid-cols-4 gap-3">{COLS.map(([st, label, bc]) => {
