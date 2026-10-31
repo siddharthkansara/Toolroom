@@ -245,7 +245,28 @@ function OtherFactories({ factory, setMsg, onRequested }: { factory: string; set
 
 // ---- Requests between factories ----
 const REQ_LABEL: Record<string, string> = { REQUESTED: 'Waiting for answer', APPROVED: 'Approved', IN_TRANSIT: 'On the way', RECEIVED: 'Received', REJECTED: 'Rejected', CANCELLED: 'Cancelled', NOT_RECEIVED: 'Not received' };
-const ReqTag = ({ s }: { s: string }) => <span className={`rounded-lg px-2 py-0.5 text-sm font-extrabold ${s === 'RECEIVED' ? 'bg-green-600 text-white' : s === 'REJECTED' || s === 'NOT_RECEIVED' ? 'bg-red-600 text-white' : s === 'CANCELLED' ? 'bg-slate-600 text-white' : 'bg-amber-500 text-slate-950'}`}>{REQ_LABEL[s] ?? s}</span>;
+// What the request means from THIS factory's side (src = this factory is the one giving the tool)
+const reqLabel = (r: InventoryRequest, src: boolean) => {
+  const o = src ? r.requester_factory : r.source_factory;
+  switch (r.status) {
+    case 'REQUESTED': return src ? `${o} is asking` : `Waiting for ${o}`;
+    case 'APPROVED': return src ? 'Approved · move the tool' : `Approved by ${o}`;
+    case 'IN_TRANSIT': return src ? `Sent to ${o} · on the way` : `On the way from ${o}`;
+    case 'RECEIVED': return src ? `⬆ GIVEN to ${o}` : `⬇ RECEIVED from ${o}`;
+    case 'NOT_RECEIVED': return src ? `Not received by ${o} · back in your stock` : `Not received from ${o}`;
+    case 'REJECTED': return src ? 'You rejected' : `Rejected by ${o}`;
+    default: return src ? `Cancelled by ${o}` : 'You cancelled';
+  }
+};
+const reqHead = (r: InventoryRequest, src: boolean) => {
+  const t = `${r.qty_sent ?? r.qty_requested} × ${tn(r.tool_type)}`;
+  if (r.status === 'RECEIVED') return src ? `You gave ${t} to ${r.requester_factory}` : `You received ${t} from ${r.source_factory}`;
+  if (r.status === 'NOT_RECEIVED') return src ? `${t} sent to ${r.requester_factory} was not received` : `You reported ${t} from ${r.source_factory} as not received`;
+  if (r.status === 'IN_TRANSIT') return src ? `You sent ${t} to ${r.requester_factory}` : `${r.source_factory} sent you ${t}`;
+  const a = `${r.qty_requested} × ${tn(r.tool_type)}`;
+  return src ? `${r.requester_factory} asks for ${a}` : `You asked ${r.source_factory} for ${a}`;
+};
+const ReqTag = ({ r, src }: { r: InventoryRequest; src: boolean }) => <span className={`rounded-lg px-2 py-0.5 text-sm font-extrabold ${r.status === 'RECEIVED' ? (src ? 'bg-sky-600 text-white' : 'bg-green-600 text-white') : r.status === 'REJECTED' || r.status === 'NOT_RECEIVED' ? 'bg-red-600 text-white' : r.status === 'CANCELLED' ? 'bg-slate-600 text-white' : 'bg-amber-500 text-slate-950'}`}>{reqLabel(r, src)}</span>;
 export const needsAction = (r: InventoryRequest, f: string) => (r.source_factory === f && (r.status === 'REQUESTED' || r.status === 'APPROVED')) || (r.requester_factory === f && r.status === 'IN_TRANSIT');
 const timeline = (r: InventoryRequest) => [`Asked ${tm(r.requested_at)}`, r.decided_at && `${r.status === 'REJECTED' ? 'Rejected' : 'Approved'} ${tm(r.decided_at)}`, r.sent_at && `Moved ${tm(r.sent_at)}`, r.closed_at && r.status !== 'REJECTED' && `${REQ_LABEL[r.status]} ${tm(r.closed_at)}`].filter(Boolean).join(' · ');
 
@@ -273,9 +294,9 @@ function ReqCard({ r, factory, stock, sizeOf, locName, reload, setMsg }: { r: In
     <label className="block flex-1 min-w-[12rem]"><span className={lbl}>Reason (optional)</span><input className={inp} value={text} onChange={e => setText(e.target.value)}/></label>
     <button className={red ? btnRed : btn} disabled={busy} onClick={go}>{label}</button></div>);
   return (<div className="rounded-2xl border-2 border-slate-700 bg-slate-900 p-4 space-y-2">
-    <div className="flex items-center gap-2 flex-wrap"><ReqTag s={r.status}/><span className="text-sm text-slate-400">{isSource ? `From ${r.requester_factory}` : `To ${r.source_factory}`}</span></div>
-    <p className="text-xl font-bold">{isSource ? `${r.requester_factory} asks for` : `You asked ${r.source_factory} for`} {r.qty_requested} × {tn(r.tool_type)} <Tag s={r.state}/> · size {r.roller_size}</p>
-    {r.qty_sent != null && r.qty_sent !== r.qty_requested && <p className="text-slate-300">{r.qty_sent} sent</p>}
+    <div className="flex items-center gap-2 flex-wrap"><ReqTag r={r} src={isSource}/><span className="text-sm text-slate-400">{isSource ? `Request from ${r.requester_factory}` : `Request to ${r.source_factory}`}</span></div>
+    <p className="text-xl font-bold">{reqHead(r, isSource)} <Tag s={r.state}/> · size {r.roller_size}</p>
+    {r.qty_sent != null && r.qty_sent !== r.qty_requested && <p className="text-slate-300">Asked for {r.qty_requested}, {r.qty_sent} sent</p>}
     {r.note && <p className="text-slate-300 text-sm">Note from {r.requester_factory}: {r.note}</p>}
     {r.decision_note && <p className="text-slate-300 text-sm">Note from {r.source_factory}: {r.decision_note}</p>}
     {r.send_note && <p className="text-slate-300 text-sm">When moved: {r.send_note}</p>}
