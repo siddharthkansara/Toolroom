@@ -41,7 +41,7 @@ function Mover({ line, locs, def, label, onDone, setMsg }: { line: InventoryStoc
 }
 
 // ---- Mark hardened (soft -> hard) or take out of stock ----
-const WHY = ['Put on machine', 'Worn out / scrapped', 'Other'];
+const WHY = ['Damaged / scrapped in stock', 'Other'];   // tools used on a header are recorded on the Shift Sheet instead
 function ActionForm({ line, type, onDone, setMsg }: { line: InventoryStock; type: 'harden' | 'out'; onDone: () => void; setMsg: (m: string) => void }) {
   const [n, setN] = useState(String(line.qty)); const [why, setWhy] = useState(WHY[0]); const [note, setNote] = useState(''); const [busy, setBusy] = useState(false);
   const go = async () => {
@@ -117,7 +117,7 @@ function Locs({ factory, locs, onDone, setMsg }: { factory: string; locs: Invent
 }
 
 // ---- History of changes ----
-const KIND: Record<string, string> = { RECEIPT: 'Received', HARDEN: 'Hardened', TAKE_OUT: 'Taken out', MOVE: 'Moved', OPENING: 'Added', CORRECTION: 'Corrected', RETURN: 'Returned', TRANSFER_IN: 'Transferred in', TRANSFER_OUT: 'Transferred out' };
+const KIND: Record<string, string> = { RECEIPT: 'Received', HARDEN: 'Hardened', TAKE_OUT: 'Taken out', MOVE: 'Moved', OPENING: 'Added', CORRECTION: 'Corrected', RETURN: 'Returned', USED: 'Used', USED_UNDO: 'Used (undone)', TRANSFER_IN: 'Transferred in', TRANSFER_OUT: 'Transferred out' };
 function History({ factory, sizeOf, locName }: { factory: string; sizeOf: Map<string, string>; locName: Map<string, string> }) {
   const [rows, setRows] = useState<InventoryMove[]>([]);
   useEffect(() => { (async () => {
@@ -138,15 +138,13 @@ function History({ factory, sizeOf, locName }: { factory: string; sizeOf: Map<st
 
 // ---- Roller taken off the header machine (the notebook entry) ----
 const dd = (d: string) => new Date(d + 'T00:00:00').toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' });
-const TD_TOOLS: ToolType[] = ['DIE_TOP', 'BOTTOM', 'FACING_PUNCH', 'SHORT_PIN'];
 function RunNote({ r }: { r: InventoryTakedown }) {
   return (<div className="rounded-xl bg-slate-900 p-3 text-slate-300"><b className="text-slate-100">Last run:</b> off machine {dd(r.taken_down_on)}{r.machine_id ? ` · ${mname(r.machine_id)}` : ''}{r.wire_size ? ` · Wire ${r.wire_size}` : ''}{r.last_batta ? ` · Last batta ${r.last_batta}` : ''}{r.extra_batta ? ` · Extra batta ${r.extra_batta}` : ''}{r.note ? ` · ${r.note}` : ''}</div>);
 }
-function TakeDown({ factory, rolls, locs, onDone, setMsg }: { factory: string; rolls: RollerMaster[]; locs: InventoryLocation[]; onDone: () => void; setMsg: (m: string) => void }) {
+function TakeDown({ factory, rolls, onDone, setMsg }: { factory: string; rolls: RollerMaster[]; locs?: InventoryLocation[]; onDone: () => void; setMsg: (m: string) => void }) {
   const [machines, setMachines] = useState<HeaderMachine[]>([]); const [recent, setRecent] = useState<InventoryTakedown[]>([]);
   const [mid, setMid] = useState(''); const [f, setF] = useState(''); const [rid, setRid] = useState(''); const [date, setDate] = useState(istDate());
-  const [wire, setWire] = useState(''); const [batta, setBatta] = useState(''); const [extra, setExtra] = useState(''); const [note, setNote] = useState('');
-  const [loc, setLoc] = useState(''); const [t, setT] = useState<Record<string, { ret: string; scr: string }>>({}); const [busy, setBusy] = useState(false);
+  const [wire, setWire] = useState(''); const [batta, setBatta] = useState(''); const [extra, setExtra] = useState(''); const [note, setNote] = useState(''); const [busy, setBusy] = useState(false);
   useEffect(() => { (async () => {
     const [m, r] = await Promise.all([
       supabase.from('header_machines').select('*').eq('factory_id', factory),
@@ -157,21 +155,19 @@ function TakeDown({ factory, rolls, locs, onDone, setMsg }: { factory: string; r
   const list = rolls.filter(r => !f.trim() || r.roller_size.toLowerCase().includes(f.trim().toLowerCase())).sort((a, b) => a.roller_size.localeCompare(b.roller_size, undefined, { numeric: true }));
   const chosen = rid && list.some(r => r.id === rid) ? rid : list.length === 1 ? list[0].id : '';
   const pickMachine = (id: string) => { setMid(id); const cr = machines.find(m => m.id === id)?.current_roller_id; if (cr) { setF(''); setRid(cr); } };   // roller currently on that machine
-  const setTool = (k: string, side: 'ret' | 'scr', v: string) => setT({ ...t, [k]: { ret: t[k]?.ret ?? '', scr: t[k]?.scr ?? '', [side]: v } });
   const save = async () => {
     if (!chosen) { setMsg('Choose the roller size.'); return; }
     if (!date) { setMsg('Choose the date.'); return; }
-    const tools = TD_TOOLS.map(k => ({ tool_type: k, returned: num(t[k]?.ret ?? ''), scrapped: num(t[k]?.scr ?? '') })).filter(x => x.returned > 0 || x.scrapped > 0);
     setBusy(true);
-    const { error } = await rpc('inventory_take_down', { p_factory: factory, p_roller: chosen, p_machine: mid, p_date: date, p_wire: wire, p_batta: batta, p_extra: extra, p_note: note, p_location: loc || null, p_tools: tools });
+    const { error } = await rpc('inventory_take_down', { p_factory: factory, p_roller: chosen, p_machine: mid, p_date: date, p_wire: wire, p_batta: batta, p_extra: extra, p_note: note, p_location: null, p_tools: [] });
     setBusy(false);
     if (error) { setMsg(`Could not save: ${error.message}`); return; }
-    setMsg('Recorded. Reusable tools are back in stock.'); onDone();
+    setMsg('Recorded.'); onDone();
   };
   return (<div className="space-y-4">
     <section className="rounded-2xl border-2 border-slate-700 bg-slate-900 p-4 space-y-3">
       <h3 className="text-xl font-bold">Roller taken off the header machine</h3>
-      <p className="text-slate-400 text-sm">This replaces the notebook entry. Reusable tools go back into hard stock. Worn out tools are only recorded.</p>
+      <p className="text-slate-400 text-sm">This is the run notebook: wire size and batta details for a size. Tools used and rollers forged go on the Shift Sheet.</p>
       <div className="grid sm:grid-cols-2 gap-3">
         <label className="block"><span className={lbl}>Header machine</span><select className={inp} value={mid} onChange={e => pickMachine(e.target.value)}><option value="">Choose machine</option>{machines.map(m => <option key={m.id} value={m.id}>{mname(m.id)}</option>)}</select></label>
         <label className="block"><span className={lbl}>Date taken down</span><input type="date" className={inp} value={date} onChange={e => setDate(e.target.value)}/></label>
@@ -179,13 +175,7 @@ function TakeDown({ factory, rolls, locs, onDone, setMsg }: { factory: string; r
         <label className="block"><span className={lbl}>Roller size</span><select className={inp} value={chosen} onChange={e => setRid(e.target.value)}><option value="">Choose roller size</option>{list.map(r => <option key={r.id} value={r.id}>{r.roller_size}</option>)}</select></label>
         <label className="block"><span className={lbl}>Wire size</span><input className={inp} value={wire} onChange={e => setWire(e.target.value)}/></label>
         <label className="block"><span className={lbl}>Last batta number running</span><input className={inp} value={batta} onChange={e => setBatta(e.target.value)}/></label>
-        <label className="block sm:col-span-2"><span className={lbl}>Extra batta available (optional)</span><input className={inp} value={extra} onChange={e => setExtra(e.target.value)}/></label></div>
-      <h4 className="text-lg font-bold pt-2">Tools from this run</h4>
-      {TD_TOOLS.map(k => <div key={k} className="rounded-xl bg-slate-800 p-3"><div className="font-bold text-lg mb-2">{tn(k)}</div><div className="grid grid-cols-2 gap-3">
-        <label className="block"><span className={lbl}>Reusable (back to stock)</span><input inputMode="numeric" className={inp} value={t[k]?.ret ?? ''} onChange={e => setTool(k, 'ret', e.target.value)}/></label>
-        <label className="block"><span className={lbl}>Worn out (scrapped)</span><input inputMode="numeric" className={inp} value={t[k]?.scr ?? ''} onChange={e => setTool(k, 'scr', e.target.value)}/></label></div></div>)}
-      <div className="grid sm:grid-cols-2 gap-3">
-        <label className="block"><span className={lbl}>Put reusable tools in</span><select className={inp} value={loc} onChange={e => setLoc(e.target.value)}><option value="">Not placed yet</option>{locs.map(l => <option key={l.id} value={l.id}>{l.name}</option>)}</select></label>
+        <label className="block"><span className={lbl}>Extra batta available (optional)</span><input className={inp} value={extra} onChange={e => setExtra(e.target.value)}/></label>
         <label className="block"><span className={lbl}>Note (optional)</span><input className={inp} value={note} onChange={e => setNote(e.target.value)}/></label></div>
       <button className={btn} disabled={busy} onClick={save}>Save record</button></section>
     {recent.length > 0 && <section className="rounded-2xl border-2 border-slate-700 bg-slate-900 p-4 space-y-2"><h3 className="text-xl font-bold">Recent records</h3>
@@ -334,31 +324,30 @@ export function InventoryTab({ factory, startView }: { factory: string; startVie
   const [locs, setLocs] = useState<InventoryLocation[]>([]); const [lastLoc, setLastLoc] = useState<Record<string, string>>({});
   const [goLive, setGoLive] = useState(''); const [q, setQ] = useState(''); const [open, setOpen] = useState<Record<string, boolean>>({});
   const [view, setView] = useState<View>('stock'); const [op, setOp] = useState<{ k: string; t: 'move' | 'harden' | 'out' } | null>(null); const [msg, setMsg] = useState('');
-  const [checks, setChecks] = useState<{ slot: string; status: string; created_at: string }[]>([]);
+  const [heads, setHeads] = useState<HeaderMachine[]>([]);
   const [lastRun, setLastRun] = useState<Record<string, InventoryTakedown>>({});
   const [reqs, setReqs] = useState<InventoryRequest[]>([]);
   const [origin, setOrigin] = useState<Record<string, { kind: string; reason: string | null; created_at: string }>>({});
   const load = useCallback(async () => {
     if (!factory) return;
-    const [s, r, l, m, g, c, td, rq, om] = await Promise.all([
+    const [s, r, l, m, g, td, rq, om, hm] = await Promise.all([
       supabase.from('inventory_stock').select('*').eq('factory_id', factory),
       supabase.from('roller_master').select('*').eq('factory_id', factory),
       supabase.from('inventory_locations').select('*').eq('factory_id', factory).order('name'),
       supabase.from('inventory_moves').select('roller_id, location_id, created_at').eq('factory_id', factory).not('location_id', 'is', null).order('created_at', { ascending: false }).limit(500),
       supabase.from('inventory_settings').select('go_live').eq('id', 1).maybeSingle(),
-      supabase.from('inventory_daily_checks').select('slot, status, created_at').eq('factory_id', factory).eq('check_date', istDate()),
       supabase.from('inventory_takedowns').select('*').eq('factory_id', factory).order('taken_down_on', { ascending: false }).order('created_at', { ascending: false }).limit(300),
       supabase.from('inventory_requests').select('*').or(`source_factory.eq.${factory},requester_factory.eq.${factory}`).order('requested_at', { ascending: false }).limit(100),
-      supabase.from('inventory_moves').select('roller_id, tool_type, state, kind, reason, created_at').eq('factory_id', factory).is('location_id', null).gt('qty', 0).order('created_at', { ascending: false }).limit(200)]);
+      supabase.from('inventory_moves').select('roller_id, tool_type, state, kind, reason, created_at').eq('factory_id', factory).is('location_id', null).gt('qty', 0).order('created_at', { ascending: false }).limit(200),
+      supabase.from('header_machines').select('*').eq('factory_id', factory)]);
     setStock((s.data ?? []) as unknown as InventoryStock[]); setRolls((r.data ?? []) as unknown as RollerMaster[]); setLocs((l.data ?? []) as unknown as InventoryLocation[]);
     const ll: Record<string, string> = {};
     ((m.data ?? []) as unknown as { roller_id: string; location_id: string }[]).forEach(x => { if (!ll[x.roller_id]) ll[x.roller_id] = x.location_id; });
     setLastLoc(ll); setGoLive((g.data as unknown as { go_live: string } | null)?.go_live ?? '');
-    setChecks((c.data ?? []) as unknown as { slot: string; status: string; created_at: string }[]);
     const lr: Record<string, InventoryTakedown> = {}; ((td.data ?? []) as unknown as InventoryTakedown[]).forEach(x => { if (!lr[x.roller_id]) lr[x.roller_id] = x; }); setLastRun(lr); setReqs((rq.data ?? []) as unknown as InventoryRequest[]);
     const og: Record<string, { kind: string; reason: string | null; created_at: string }> = {};
     ((om.data ?? []) as unknown as { roller_id: string; tool_type: string; state: string; kind: string; reason: string | null; created_at: string }[]).forEach(x => { const k = `${x.roller_id}|${x.tool_type}|${x.state}`; if (!og[k]) og[k] = x; });
-    setOrigin(og);
+    setOrigin(og); setHeads((hm.data ?? []) as unknown as HeaderMachine[]);
   }, [factory]);
   useEffect(() => { setView(startView ?? 'stock'); setOp(null); setMsg(''); load(); }, [load, startView]);
   useEffect(() => { const t = setInterval(load, 60000); return () => clearInterval(t); }, [load]);   // picks up tools the plant has just received
@@ -366,14 +355,7 @@ export function InventoryTab({ factory, startView }: { factory: string; startVie
   const go = (v: View) => { setView(v); setOp(null); setMsg(''); };
   const done = () => { setOp(null); load(); };
 
-  const slot = istHour() < 14 ? 'MORNING' : 'EVENING'; const pending = stock.length > 0 && !checks.some(c => c.slot === slot);
-  const checkIn = async (status: 'UPDATED' | 'NOTHING') => {
-    const { error } = await supabase.from('inventory_daily_checks').upsert({ factory_id: factory, check_date: istDate(), slot, status }, { onConflict: 'factory_id,check_date,slot' });
-    if (error) { setMsg(`Could not save: ${error.message}`); return; }
-    setMsg(status === 'NOTHING' ? 'Noted: nothing to update.' : 'Stock update recorded. Thank you.'); window.dispatchEvent(new Event('stock-check')); load();
-  };
-
-  const sizeOf = new Map(rolls.map(r => [r.id, r.roller_size])); const act = locs.filter(l => l.active); const locName = new Map(locs.map(l => [l.id, l.name]));
+  const sizeOf = new Map(rolls.map(r => [r.id, r.roller_size])); const act = locs.filter(l => l.active); const locName = new Map(locs.map(l => [l.id, l.name])); const runOn = (id: string) => heads.filter(h => h.current_roller_id === id).map(h => mname(h.id));
   const unplaced = stock.filter(x => !x.location_id);
   const key = (x: InventoryStock) => `${x.roller_id}|${x.tool_type}|${x.state}|${x.location_id ?? ''}`;
   const soft = stock.filter(x => x.state === 'SOFT').reduce((a, x) => a + x.qty, 0), hard = stock.filter(x => x.state === 'HARD').reduce((a, x) => a + x.qty, 0);
@@ -400,10 +382,6 @@ export function InventoryTab({ factory, startView }: { factory: string; startVie
     {view === 'stock' && <>
       <div className="rounded-xl bg-slate-900 border border-slate-800 p-4 flex flex-wrap gap-x-8 gap-y-1 text-xl">
         <span><b className="text-3xl text-amber-300">{(soft + hard).toLocaleString('en-IN')}</b> pcs in stock</span><span className="text-slate-300">Soft {soft.toLocaleString('en-IN')}</span><span className="text-slate-300">Hard {hard.toLocaleString('en-IN')}</span></div>
-      {pending && <section className="rounded-2xl border-2 border-amber-400 bg-amber-400/20 p-4 space-y-3">
-        <h3 className="text-xl font-bold">{slot === 'MORNING' ? 'Update stock used by the night shift' : 'Update today’s stock'}</h3>
-        <p className="text-slate-300 text-sm">Mark tools hardened or taken out below, then tap “Update done”. If nothing was used, tap “Nothing to update”.</p>
-        <div className="flex gap-3 flex-wrap"><button className={btn} onClick={() => checkIn('UPDATED')}>✔ Update done</button><button className={btn2} onClick={() => checkIn('NOTHING')}>Nothing to update</button></div></section>}
       {unplaced.length > 0 && <section className="rounded-2xl border-2 border-amber-400 bg-slate-900 p-4 space-y-3">
         <h3 className="text-xl font-bold">📥 To put away ({unplaced.length})</h3>
         <p className="text-slate-400 text-sm">These have no location yet. Choose where you kept them.</p>
@@ -417,7 +395,7 @@ export function InventoryTab({ factory, startView }: { factory: string; startVie
       <div className="space-y-2">{groups.map(g => { const isOpen = !!open[g.id]; const gs = g.items.filter(x => x.state === 'SOFT').reduce((a, x) => a + x.qty, 0), gh = g.items.filter(x => x.state === 'HARD').reduce((a, x) => a + x.qty, 0);
         return (<div key={g.id} className="rounded-lg bg-slate-800">
           <button onClick={() => setOpen({ ...open, [g.id]: !isOpen })} aria-expanded={isOpen} className="w-full min-h-16 px-3 py-2 flex items-center gap-3 text-left">
-            <span className="text-xl font-extrabold">{rollerLabel(factory, g.size)}</span><span className="ml-auto text-sm text-slate-300">{g.items.length ? `Soft ${gs} · Hard ${gh}` : 'No stock'}</span><span>{isOpen ? '▲' : '▼'}</span></button>
+            <span className="text-xl font-extrabold">{rollerLabel(factory, g.size)}</span>{runOn(g.id).length > 0 && <span className="text-sm font-semibold text-amber-300">Running on {runOn(g.id).join(', ')}</span>}<span className="ml-auto text-sm text-slate-300">{g.items.length ? `Soft ${gs} · Hard ${gh}` : 'No stock'}</span><span>{isOpen ? '▲' : '▼'}</span></button>
           {isOpen && <div className="px-3 pb-3 space-y-2">{lastRun[g.id] && <RunNote r={lastRun[g.id]}/>}{g.items.map(x => { const k = key(x); const sel = (t: 'move' | 'harden' | 'out') => setOp(op?.k === k && op.t === t ? null : { k, t }); return (<div key={k} className="rounded-xl bg-slate-900 p-3 space-y-2">
             <div className="flex items-center gap-2 flex-wrap"><span className="text-lg font-bold">{tn(x.tool_type)}</span><Tag s={x.state}/>
               <span className={x.location_id ? 'text-slate-300' : 'text-amber-300 font-semibold'}>{x.location_id ? locName.get(x.location_id) ?? 'Location' : 'Not placed'}</span>

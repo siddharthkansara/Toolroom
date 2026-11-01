@@ -7,6 +7,7 @@ import { useOrders, dt, SEL, DSEL } from '@/lib/useOrders';
 import { FACTORIES, FCHIP, mname as mcode, rollerLabel } from '@/lib/factories';
 import { TOOL_LABEL, type OrderFull, type DeliveryFull, type Delivery, type LatheLog, type RollerMaster, type MonthlyProduction } from '@/types/database';
 import { StockFreshness } from '@/lib/stockReminder';
+import { ShiftReports } from '@/lib/shiftReports';
 
 const fd = (d: string | null) => (d ? new Date(d).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata', dateStyle: 'medium', timeStyle: 'short' }) : '');
 const kind = (o: OrderFull) => (o.tooling ? TOOL_LABEL[o.tooling.tool_type] : o.custom_tool_name || 'Other tool');
@@ -228,6 +229,7 @@ function Dashboard() {
           {!consCalc.length && <tr><td colSpan={6} className="px-3 py-6 text-center text-slate-500">No tools made in this period.</td></tr>}</tbody></table></div>
       <p className="text-xs text-slate-500 mt-2">{consMissing ? `${consMissing} line${consMissing === 1 ? '' : 's'} show “—” because no rollers-forged figure is entered for that size in this period (use the month-end entry just below). ` : ''}Tools are made some days before they are used, so read a quarter or the whole year rather than a single month.</p></section>
           <Planner dels={allD} />
+              <ShiftReports rs={rs} re={re} fsel={fsel} period={period} />
               <StockFreshness />
         <MonthlyEntry />
 
