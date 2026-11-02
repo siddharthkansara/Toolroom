@@ -11,7 +11,7 @@ import { TOOL_LABEL, type HeaderMachine, type ProductionRun, type RollerMaster, 
 import { InventoryTab } from '@/lib/inventory';
 import { StockReminder, RequestBanner } from '@/lib/stockReminder';
 import { ShiftSheet } from '@/lib/shiftSheet';
-
+import { ToolPlanner } from '@/lib/planner';
 
 type Rec = { code: string; od: string; len: string; od2: string; step: string };
 type Other = { name: string; dims: string; qty: number; note: string };
@@ -47,7 +47,7 @@ const Stepper = ({ n, set }: { n: number; set: (v: number) => void }) => (<div c
   <button aria-label="More" onClick={() => set(n === 0 ? 5 : n + 1)} className="w-16 rounded-xl bg-slate-800"><Plus className="mx-auto"/></button></div>);
 
 function Kiosk() {
-  const [tab, setTab] = useState<'new' | 'track' | 'all' | 'stock' | 'sheet'>('new');
+  const [tab, setTab] = useState<'new' | 'track' | 'all' | 'stock' | 'sheet' | 'plan'>('new');
 
   const [invStart, setInvStart] = useState<'stock' | 'req'>('stock');
 
@@ -268,12 +268,13 @@ const periodLabel = per === 'y' ? `FY ${fy}-${String(fy + 1).slice(2)}` : per ==
     </header>
               {role !== 'owner' && tab !== 'sheet' && <StockReminder factory={factory} onOpen={() => setTab('sheet')} />}
     {role !== 'owner' && tab !== 'stock' && <RequestBanner factory={factory} onOpen={() => { setInvStart('req'); setTab('stock'); }} />}
-    <div className="grid grid-cols-2 sm:grid-cols-5 gap-3 mb-5">
+        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3 mb-5">
       <button className={`${big} h-20 ${tab === 'new' ? on : off}`} onClick={() => setTab('new')}>➕ New Order</button>
       <button className={`${big} h-20 ${tab === 'track' ? on : off}`} onClick={() => setTab('track')}>📍 Where is my tool?</button>
       <button className={`${big} h-20 ${tab === 'all' ? on : off}`} onClick={() => setTab('all')}>📋 All Orders</button>
       <button className={`${big} h-20 ${tab === 'stock' ? on : off}`} onClick={() => { setInvStart('stock'); setTab('stock'); }}>📦 Inventory</button>
             <button className={`${big} h-20 ${tab === 'sheet' ? on : off}`} onClick={() => setTab('sheet')}>📝 Shift Sheet</button>
+                  <button className={`${big} h-20 ${tab === 'plan' ? on : off}`} onClick={() => setTab('plan')}>🧮 Tool Plan</button>
     </div>
 
     {tab === 'new' ? (<div className="grid lg:grid-cols-3 gap-6"><div className="lg:col-span-2 space-y-6">
@@ -379,7 +380,7 @@ const periodLabel = per === 'y' ? `FY ${fy}-${String(fy + 1).slice(2)}` : per ==
         <td className="px-3 py-2">{sum(o => o.quantity)}</td><td className="px-3 py-2">{sum(o => o.qty_made ?? 0)}</td><td className="px-3 py-2">{sum(o => o.qty_received ?? 0)}</td><td/>
         <td className="px-3 py-2 text-amber-300 text-sm">{sum(atCnc) > 0 ? `📦 ${sum(atCnc)} waiting at CNC` : ''}</td></tr></tfoot>}
     </table></div>
-</div>) : tab === 'sheet' ? (<ShiftSheet factory={factory} isOwner={role === 'owner'} />) : tab === 'stock' ? (<InventoryTab factory={factory} startView={invStart} />) : (<div>
+</div>) : tab === 'plan' ? (<ToolPlanner fsel={factory} />) : tab === 'sheet' ? (<ShiftSheet factory={factory} isOwner={role === 'owner'} />) : tab === 'stock' ? (<InventoryTab factory={factory} startView={invStart} />) : (<div>
       <div className="flex gap-2 overflow-x-auto pb-3">{[null, ...machines.map(m => m.id)].map(id =>
         <button key={id ?? 'all'} onClick={() => setFilter(id)} className={`px-6 rounded-full border-2 text-xl whitespace-nowrap ${filter === id ? on : off}`}>{id ? mcode(id) : 'All'}</button>)}</div>
       <div className="grid grid-cols-2 xl:grid-cols-4 gap-3">{COLS.map(([st, label, bc]) => {
