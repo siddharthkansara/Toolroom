@@ -8,6 +8,7 @@ import { FACTORIES, FCHIP, mname as mcode, rollerLabel } from '@/lib/factories';
 import { TOOL_LABEL, type OrderFull, type DeliveryFull, type Delivery, type LatheLog, type RollerMaster, type MonthlyProduction } from '@/types/database';
 import { StockFreshness } from '@/lib/stockReminder';
 import { ShiftReports } from '@/lib/shiftReports';
+import { ToolPlanner } from '@/lib/planner';
 
 const fd = (d: string | null) => (d ? new Date(d).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata', dateStyle: 'medium', timeStyle: 'short' }) : '');
 const kind = (o: OrderFull) => (o.tooling ? TOOL_LABEL[o.tooling.tool_type] : o.custom_tool_name || 'Other tool');
@@ -195,7 +196,7 @@ function Dashboard() {
         <td>{Object.entries(g.tools).map(([k, n]) => `${n} ${k}`).join(' · ')}</td><td className="text-right font-bold">{g.made}</td><td className="text-right text-sky-400">{g.recd}</td></tr>)}</tbody></table>
       <p className="text-xs text-slate-500 mt-2">Columns: factory - roller size, drawing, tools made, total made, total received at plant.</p></section>
     
-          <Planner dels={allD} />
+              <ToolPlanner fsel={fsel} />
               <ShiftReports rs={rs} re={re} fsel={fsel} period={period} />
               <StockFreshness />
        
@@ -226,7 +227,7 @@ function Dashboard() {
 const URGENCY_LABEL: Record<string, string> = { URGENT_MACHINE_DOWN: 'Breakdown / Line Down', URGENT: 'Urgent', BUFFER_NEXT_SHIFT: 'Normal' };
 export default function Page() { return <Guard allow={['owner']}><Dashboard/></Guard>; }
 
-function Planner({ dels }: { dels: DeliveryFull[] }) {
+/* function Planner({ dels }: { dels: DeliveryFull[] }) {
   const [mp, setMp] = useState<MonthlyProduction[]>([]); const [rolls, setRolls] = useState<RollerMaster[]>([]);
   const [fac, setFac] = useState<string>(FACTORIES[0]); const [rid, setRid] = useState(''); const [plan, setPlan] = useState('');
   useEffect(() => { (async () => setMp(await pageAll<MonthlyProduction>((a, b) => supabase.from('monthly_production').select('*').order('month').range(a, b))))(); }, []);
@@ -259,4 +260,4 @@ function Planner({ dels }: { dels: DeliveryFull[] }) {
       <p className="text-xs text-slate-500 pt-1">Based on latest {res.months} month{res.months === 1 ? '' : 's'} of records ({res.forged.toLocaleString('en-IN')} rollers forged). {res.months < 3 ? 'Only a few months of history, so treat this as a rough guide. ' : ''}This is total tools consumed; it is not reduced by tools already in stock at the plant.</p></div>
       : <div className="text-slate-500">No history yet for this size. Enter rollers forged at month-end, and make sure tools were made in those months.</div>)}
   </section>);
-}
+} */
