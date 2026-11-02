@@ -3,7 +3,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { supabase, rpc } from '@/lib/supabase';
 import { uuid } from '@/lib/useOrders';
 import { rollerLabel, mname, FACTORIES } from '@/lib/factories';
-import { TOOL_LABEL, type RollerMaster, type InventoryStock, type InventoryLocation, type InventoryMove, type InventoryTakedown, type InventoryRequest, type HeaderMachine, type ToolType } from '@/types/database';
+import { TOOL_LABEL, type RollerMaster, type InventoryStock, type InventoryLocation, type InventoryMove, type InventoryTakedown, type InventoryRequest, type HeaderMachine, type ToolType, type ToolingMaster } from '@/types/database';
 
 const inp = 'h-14 rounded-xl bg-slate-900 border-2 border-slate-700 px-3 text-xl w-full';
 const lbl = 'block text-sm font-semibold text-slate-300 mb-1';
@@ -11,6 +11,9 @@ const btn = 'min-h-14 px-6 rounded-xl bg-green-600 text-white text-xl font-bold 
 const btnRed = 'min-h-14 px-6 rounded-xl bg-red-600 text-white text-xl font-bold disabled:opacity-50';
 const btn2 = 'min-h-12 px-5 rounded-xl border-2 border-slate-700 bg-slate-900 text-lg font-bold';
 const tn = (t: string) => TOOL_LABEL[t as ToolType] ?? t;
+const detOf = (k: ToolingMaster) => k.tool_type === 'DIE_TOP' ? (k.batta_code ? `Batta ${k.batta_code}` : '')
+  : k.tool_type === 'BOTTOM' ? `OD ${k.od_dim ?? '—'} × L ${k.length_dim ?? '—'} · OD ${k.od2_dim ?? '—'} · Step ${k.step_depth_dim ?? '—'}`
+  : k.od_dim != null || k.length_dim != null ? `OD ${k.od_dim ?? '—'} × L ${k.length_dim ?? '—'}` : '';
 const Tag = ({ s }: { s: string }) => <span className={`rounded-lg px-2 py-0.5 text-sm font-extrabold text-white ${s === 'HARD' ? 'bg-green-600' : 'bg-slate-600'}`}>{s}</span>;
 const num = (v: string) => Math.round(+v.replace(/,/g, '') || 0);
 export const istDate = () => new Date(Date.now() + 330 * 60000).toISOString().slice(0, 10);
@@ -324,7 +327,7 @@ export function InventoryTab({ factory, startView }: { factory: string; startVie
   const [locs, setLocs] = useState<InventoryLocation[]>([]); const [lastLoc, setLastLoc] = useState<Record<string, string>>({});
   const [goLive, setGoLive] = useState(''); const [q, setQ] = useState(''); const [open, setOpen] = useState<Record<string, boolean>>({});
   const [view, setView] = useState<View>('stock'); const [op, setOp] = useState<{ k: string; t: 'move' | 'harden' | 'out' } | null>(null); const [msg, setMsg] = useState('');
-  const [heads, setHeads] = useState<HeaderMachine[]>([]);
+    const [heads, setHeads] = useState<HeaderMachine[]>([]); const [dimMap, setDimMap] = useState<Record<string, string>>({});
   const [lastRun, setLastRun] = useState<Record<string, InventoryTakedown>>({});
   const [reqs, setReqs] = useState<InventoryRequest[]>([]);
   const [origin, setOrigin] = useState<Record<string, { kind: string; reason: string | null; created_at: string }>>({});
@@ -348,6 +351,9 @@ export function InventoryTab({ factory, startView }: { factory: string; startVie
     const og: Record<string, { kind: string; reason: string | null; created_at: string }> = {};
     ((om.data ?? []) as unknown as { roller_id: string; tool_type: string; state: string; kind: string; reason: string | null; created_at: string }[]).forEach(x => { const k = `${x.roller_id}|${x.tool_type}|${x.state}`; if (!og[k]) og[k] = x; });
     setOrigin(og); setHeads((hm.data ?? []) as unknown as HeaderMachine[]);
+        const tm: ToolingMaster[] = []; for (let i = 0; i < 20000; i += 1000) { const t = await supabase.from('tooling_master').select('*').range(i, i + 999); const d = (t.data ?? []) as unknown as ToolingMaster[]; tm.push(...d); if (d.length < 1000) break; }
+    const dm: Record<string, string[]> = {}; tm.forEach(k => { const x = detOf(k); if (x) { const kk = `${k.roller_id}|${k.tool_type}`; if (!(dm[kk] ??= []).includes(x)) dm[kk].push(x); } });
+    setDimMap(Object.fromEntries(Object.entries(dm).map(([k, v]) => [k, v.join(' / ')])));
   }, [factory]);
   useEffect(() => { setView(startView ?? 'stock'); setOp(null); setMsg(''); load(); }, [load, startView]);
   useEffect(() => { const t = setInterval(load, 60000); return () => clearInterval(t); }, [load]);   // picks up tools the plant has just received
@@ -395,11 +401,12 @@ export function InventoryTab({ factory, startView }: { factory: string; startVie
       <div className="space-y-2">{groups.map(g => { const isOpen = !!open[g.id]; const gs = g.items.filter(x => x.state === 'SOFT').reduce((a, x) => a + x.qty, 0), gh = g.items.filter(x => x.state === 'HARD').reduce((a, x) => a + x.qty, 0);
         return (<div key={g.id} className="rounded-lg bg-slate-800">
           <button onClick={() => setOpen({ ...open, [g.id]: !isOpen })} aria-expanded={isOpen} className="w-full min-h-16 px-3 py-2 flex items-center gap-3 text-left">
-            <span className="text-xl font-extrabold">{rollerLabel(factory, g.size)}</span>{runOn(g.id).length > 0 && <span className="text-sm font-semibold text-amber-300">Running on {runOn(g.id).join(', ')}</span>}<span className="ml-auto text-sm text-slate-300">{g.items.length ? `Soft ${gs} · Hard ${gh}` : 'No stock'}</span><span>{isOpen ? '▲' : '▼'}</span></button>
+                        <span className="text-xl font-extrabold">{rollerLabel(factory, g.size)}</span><span className="ml-auto text-sm text-slate-300">{g.items.length ? `Soft ${gs} · Hard ${gh}` : 'No stock'}</span><span>{isOpen ? '▲' : '▼'}</span></button>
           {isOpen && <div className="px-3 pb-3 space-y-2">{lastRun[g.id] && <RunNote r={lastRun[g.id]}/>}{g.items.map(x => { const k = key(x); const sel = (t: 'move' | 'harden' | 'out') => setOp(op?.k === k && op.t === t ? null : { k, t }); return (<div key={k} className="rounded-xl bg-slate-900 p-3 space-y-2">
             <div className="flex items-center gap-2 flex-wrap"><span className="text-lg font-bold">{tn(x.tool_type)}</span><Tag s={x.state}/>
               <span className={x.location_id ? 'text-slate-300' : 'text-amber-300 font-semibold'}>{x.location_id ? locName.get(x.location_id) ?? 'Location' : 'Not placed'}</span>
               <span className="ml-auto text-2xl font-extrabold">{x.qty} pcs</span></div>
+                          {dimMap[`${x.roller_id}|${x.tool_type}`] && <div className="text-sm text-slate-400">{dimMap[`${x.roller_id}|${x.tool_type}`]}</div>}
             <div className="flex gap-2 flex-wrap">
               {x.state === 'SOFT' && <button className={btn2} onClick={() => sel('harden')}>Hardened</button>}
               <button className={btn2} onClick={() => sel('out')}>Take out</button>
