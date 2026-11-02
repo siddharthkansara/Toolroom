@@ -17,6 +17,7 @@ const dayLabel = (d: string) => new Date(d + 'T00:00:00').toLocaleDateString('en
 const spanDays = (from: string, to: string) => Math.round((Date.parse(to) - Date.parse(from)) / 86400000);
 const nat = (a: string, b: string) => mname(a).localeCompare(mname(b), undefined, { numeric: true });
 const th = 'px-3 py-2 whitespace-nowrap'; const td = 'px-3 py-2 whitespace-nowrap';
+const sel = 'h-14 rounded-xl bg-slate-900 border-2 border-slate-700 px-3 text-xl w-full';
 
 function useHeads(factory: string) {
   const [h, setH] = useState<Head[]>([]);
@@ -52,25 +53,31 @@ export function ProductionTable({ factory, from, to }: { factory: string; from: 
   const sc = heads.reduce((a, h) => a + (h.daily_capacity ?? 0), 0) / 2;       // capacity of all headers for one shift
   const L = useRpc<Line>('report_lines', factory, from, to, mode === 'lines'); const D = useRpc<DayRow>('report_util_days', factory, from, to, mode === 'days');
   const busy = mode === 'lines' ? L.busy : D.busy; const err = mode === 'lines' ? L.err : D.err;
+    const [fOp, setFOp] = useState(''); const [fSize, setFSize] = useState(''); const [fHd, setFHd] = useState('');
+  useEffect(() => { setFOp(''); setFSize(''); setFHd(''); }, [factory, from, to]);
+  const uniq = (v: (string | null)[]) => Array.from(new Set(v.filter((x): x is string => !!x)));
+  const opts = { op: uniq(L.data.map(x => x.operator_name)).sort(), size: uniq(L.data.map(x => x.roller_size)).sort((a, b) => a.localeCompare(b, undefined, { numeric: true })), hd: uniq(L.data.map(x => x.machine_id)).sort(nat) };
+  const filt = !!(fOp || fSize || fHd);
+  const LD = L.data.filter(x => (!fOp || x.operator_name === fOp) && (!fSize || x.roller_size === fSize) && (!fHd || x.machine_id === fHd));
   const sub = 'bg-slate-800 font-bold', tot = 'bg-amber-400/20 font-extrabold';
     const rows: ReactElement[] = []; let tR = 0, tW = 0, tRc = 0, tS = 0;
 
   if (mode === 'lines') {
-    Array.from(new Set(L.data.map(x => x.work_date))).sort().forEach(d => {
+       Array.from(new Set(LD.map(x => x.work_date))).sort().forEach(d => {
       let dR = 0, dW = 0, dRc = 0, dS = 0;
       (['DAY', 'NIGHT'] as const).forEach(sh => {
-        const ls = L.data.filter(x => x.work_date === d && x.shift === sh).sort((a, b) => nat(a.machine_id, b.machine_id)); if (!ls.length) return;
+               const ls = LD.filter(x => x.work_date === d && x.shift === sh).sort((a, b) => nat(a.machine_id, b.machine_id)); if (!ls.length) return;
         let sR = 0, sW = 0, sRc = 0;
         ls.forEach((x, i) => {
           const cap = capOf.get(x.machine_id) ?? null; sR += x.rollers; sW += x.weight_kg ?? 0; if (cap) sRc += x.rollers;
           rows.push(<tr key={`${d}${sh}${i}`} className="border-t border-slate-800"><td className={td}>{dayLabel(d)}</td><td className={td}>{sh === 'DAY' ? '☀ Day' : '🌙 Night'}</td><td className={td + ' font-bold'}>{mname(x.machine_id)}</td>
             <td className={td}>{x.status === 'NOT_RUNNING' ? <span className="text-slate-400">Not running</span> : x.operator_name ?? '—'}</td><td className={td + ' font-bold'}>{x.roller_size ?? '—'}</td>
-            <td className={td}>{n0(x.rollers)}</td><td className={td}>{kg(x.weight_kg)}</td><td className={td}><P v={cap ? pct(x.rollers, cap / 2) : null}/></td></tr>);
+                        <td className={td}>{n0(x.rollers)}</td><td className={td}>{kg(x.weight_kg)}</td><td className={td}><P v={cap ? pct(x.rollers, cap / 2) : null}/></td><td className="px-3 py-2 text-slate-300 min-w-[12rem]">{x.note ?? ''}</td></tr>);
         });
-        rows.push(<tr key={`${d}${sh}s`} className={`border-t border-slate-700 ${sub}`}><td className={td} colSpan={5}>{sh === 'DAY' ? '☀ Day shift total' : '🌙 Night shift total'} · {dayLabel(d)}</td><td className={td}>{n0(sR)}</td><td className={td}>{kg(sW)}</td><td className={td}><P v={pct(sRc, sc)}/></td></tr>);
+               rows.push(<tr key={`${d}${sh}s`} className={`border-t border-slate-700 ${sub}`}><td className={td} colSpan={5}>{sh === 'DAY' ? '☀ Day shift total' : '🌙 Night shift total'} · {dayLabel(d)}</td><td className={td}>{n0(sR)}</td><td className={td}>{kg(sW)}</td><td className={td}>{filt ? <span className="text-slate-500">—</span> : <P v={pct(sRc, sc)}/>}</td><td className={td}></td></tr>);
         dR += sR; dW += sW; dRc += sRc; dS++;
       });
-      rows.push(<tr key={`${d}t`} className={`border-t border-slate-700 ${tot}`}><td className={td} colSpan={5}>Day total · {dayLabel(d)}</td><td className={td}>{n0(dR)}</td><td className={td}>{kg(dW)}</td><td className={td}><P v={pct(dRc, sc * dS)}/></td></tr>);
+            rows.push(<tr key={`${d}t`} className={`border-t border-slate-700 ${tot}`}><td className={td} colSpan={5}>Day total · {dayLabel(d)}</td><td className={td}>{n0(dR)}</td><td className={td}>{kg(dW)}</td><td className={td}>{filt ? <span className="text-slate-500">—</span> : <P v={pct(dRc, sc * dS)}/>}</td><td className={td}></td></tr>);
       tR += dR; tW += dW; tRc += dRc; tS += dS;
     });
   } else {
@@ -85,18 +92,24 @@ export function ProductionTable({ factory, from, to }: { factory: string; from: 
   const totalUtil = mode === 'lines' ? pct(tRc, sc * tS) : pct(tRc, tS);
 
   return (<div className="space-y-3">
-    {long && <p className="text-sm text-slate-400">Long period: showing one row per day. Pick a single month to see every line.</p>}
+        {long && <p className="text-sm text-slate-400">Long period: showing one row per day. Pick a single month to see every line, remarks and filters.</p>}
     {!long && <div className="grid grid-cols-2 gap-2 max-w-sm">{(['lines', 'days'] as const).map(m => <button key={m} onClick={() => setMode(m)} className={`min-h-12 rounded-xl border-2 text-lg font-bold ${mode === m ? 'border-amber-400 bg-amber-400/20' : 'border-slate-700 bg-slate-900'}`}>{m === 'lines' ? 'All lines' : 'Day summary'}</button>)}</div>}
     {sc === 0 && <p className="text-sm text-amber-300">Utilisation shows once header capacities are set (owner: Dashboard → Shift sheet reports → Headers).</p>}
     {err && <p className="text-red-400 font-semibold">Could not load: {err}</p>}
     {busy && <p className="text-slate-400">Loading…</p>}
     {mode === 'lines' && L.data.length >= 1000 && <p className="text-amber-300 text-sm">Showing the first 1,000 lines only. Use Day summary for this period.</p>}
-    <div className="overflow-x-auto rounded-xl border border-slate-800"><table className="w-full text-left" style={{ minWidth: mode === 'lines' ? 760 : 600 }}>
-      <thead className="bg-slate-800 text-slate-300 text-sm"><tr>{(mode === 'lines' ? ['Date', 'Shift', 'Header', 'Operator', 'Roller size', 'Rollers', 'Weight (kg)', 'Utilisation'] : ['Date', 'Day shift', 'Night shift', 'Day total rollers', 'Weight (kg)', 'Day utilisation']).map(h => <th key={h} className={th}>{h}</th>)}</tr></thead>
+        {mode === 'lines' && <div className="grid grid-cols-1 sm:grid-cols-4 gap-2 items-end">
+      <label className="block"><span className="block text-sm font-semibold text-slate-300 mb-1">Operator</span><select className={sel} value={fOp} onChange={e => setFOp(e.target.value)}><option value="">All operators</option>{opts.op.map(o => <option key={o} value={o}>{o}</option>)}</select></label>
+      <label className="block"><span className="block text-sm font-semibold text-slate-300 mb-1">Roller size</span><select className={sel} value={fSize} onChange={e => setFSize(e.target.value)}><option value="">All sizes</option>{opts.size.map(o => <option key={o} value={o}>{o}</option>)}</select></label>
+      <label className="block"><span className="block text-sm font-semibold text-slate-300 mb-1">Header (HD)</span><select className={sel} value={fHd} onChange={e => setFHd(e.target.value)}><option value="">All headers</option>{opts.hd.map(o => <option key={o} value={o}>{mname(o)}</option>)}</select></label>
+      {filt && <button className="min-h-14 rounded-xl border-2 border-slate-700 bg-slate-900 text-lg font-bold" onClick={() => { setFOp(''); setFSize(''); setFHd(''); }}>Clear filters</button>}</div>}
+    {mode === 'lines' && filt && <p className="text-sm text-amber-300">Filtered view: totals cover only the lines shown. Utilisation is shown on each line, not on the totals.</p>}
+    <div className="overflow-x-auto rounded-xl border border-slate-800"><table className="w-full text-left" style={{ minWidth: mode === 'lines' ? 980 : 600 }}>
+                 <thead className="bg-slate-800 text-slate-300 text-sm"><tr>{(mode === 'lines' ? ['Date', 'Shift', 'Header', 'Operator', 'Roller size', 'Rollers', 'Weight (kg)', 'Utilisation', 'Remarks'] : ['Date', 'Day shift', 'Night shift', 'Day total rollers', 'Weight (kg)', 'Day utilisation']).map(h => <th key={h} className={th}>{h}</th>)}</tr></thead>
       <tbody>{rows}
-        {!rows.length && !busy && <tr><td colSpan={8} className="px-3 py-6 text-center text-slate-500">No shift sheet data in this period.</td></tr>}
+                {!rows.length && !busy && <tr><td colSpan={9} className="px-3 py-6 text-center text-slate-500">No shift sheet data in this period.</td></tr>}
         {rows.length > 0 && (mode === 'lines'
-          ? <tr className={`border-t-2 border-slate-600 ${tot}`}><td className={td} colSpan={5}>Period total · average utilisation</td><td className={td}>{n0(tR)}</td><td className={td}>{kg(tW)}</td><td className={td}><P v={totalUtil}/></td></tr>
+                    ? <tr className={`border-t-2 border-slate-600 ${tot}`}><td className={td} colSpan={5}>Period total · average utilisation</td><td className={td}>{n0(tR)}</td><td className={td}>{kg(tW)}</td><td className={td}>{filt ? <span className="text-slate-500">—</span> : <P v={totalUtil}/>}</td><td className={td}></td></tr>
           : <tr className={`border-t-2 border-slate-600 ${tot}`}><td className={td} colSpan={3}>Period total · average utilisation</td><td className={td}>{n0(tR)}</td><td className={td}>{kg(tW)}</td><td className={td}><P v={totalUtil}/></td></tr>)}</tbody></table></div>
     <p className="text-xs text-slate-500">Utilisation = rollers forged ÷ the header’s capacity for the shift (half its daily capacity). Shift and day figures use all headers with a capacity set, so a header that did not run counts as 0%. Weight is what was typed on the sheet.</p>
   </div>);

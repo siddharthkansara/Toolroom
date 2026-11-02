@@ -90,27 +90,7 @@ function Dashboard() {
   const secsOf = (f: string) => logs.filter(l => l.factory_id === f).reduce((a, l) => a + l.duration_seconds, 0);
   const totalSecs = logs.reduce((a, l) => a + l.duration_seconds, 0);
   const dper = allD.filter(d => +new Date(d.made_at) >= +rs && +new Date(d.made_at) < +re);
-    const [mp, setMp] = useState<MonthlyProduction[]>([]); const [csq, setCsq] = useState('');
-  useEffect(() => { (async () => {   // rollers-forged figures typed in for the chosen months
-    const ym = (d: Date) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-01`;
-    let q = supabase.from('monthly_production').select('*').gte('month', ym(rs)).lt('month', ym(re));
-    if (fsel) q = q.eq('factory_id', fsel);
-    setMp(await pageAll<MonthlyProduction>((a, b) => q.order('month').range(a, b)));
-  })(); }, [rs.getTime(), re.getTime(), fsel]);
-  const consCalc = (() => {
-    const rows: Record<string, { f: string; rid: string; size: string; kind: string; made: number }> = {};
-    dper.filter(d => d.ord && d.ord.roller_id && (!fsel || d.factory_id === fsel)).forEach(d => {
-      const o = d.ord!, size = o.roller?.roller_size ?? '—', kind = o.tooling ? TOOL_LABEL[o.tooling.tool_type] : o.custom_tool_name || 'Other tool';
-      const r = (rows[`${d.factory_id}|${o.roller_id}|${kind}`] ??= { f: d.factory_id, rid: o.roller_id!, size, kind, made: 0 });
-      r.made += d.qty_made;
-    });
-    const forged: Record<string, number> = {};
-    mp.forEach(m => { const k = `${m.factory_id}|${m.roller_id}`; forged[k] = (forged[k] ?? 0) + m.rollers_forged; });
-    const s = csq.trim().toLowerCase();
-    return Object.values(rows).filter(r => !s || r.size.toLowerCase().includes(s)).map(r => ({ ...r, rollers: forged[`${r.f}|${r.rid}`] ?? 0 }))
-      .sort((a, b) => a.f.localeCompare(b.f) || a.size.localeCompare(b.size, undefined, { numeric: true }) || a.kind.localeCompare(b.kind));
-  })();
-  const consMissing = consCalc.filter(r => !r.rollers).length;
+ 
   const open = (o: OrderFull) => o.status === 'QUEUED' || o.status === 'ON_LATHE';
   const rowFor = (f: string | null) => { const fo = orders.filter(o => !f || o.factory_id === f); const fa = allD.filter(d => !f || d.factory_id === f); const dp = dper.filter(d => !f || d.factory_id === f);
     return { today: fo.filter(o => new Date(o.created_at).toDateString() === todayStr).length, toMake: fo.filter(open).reduce((a, o) => a + rem(o), 0), lathe: fo.filter(o => o.status === 'ON_LATHE').length,
@@ -214,25 +194,12 @@ function Dashboard() {
         <td className="py-2 font-bold">{rollerLabel(g.f, g.size)}</td><td className="text-slate-400">{g.drg ?? ''}</td>
         <td>{Object.entries(g.tools).map(([k, n]) => `${n} ${k}`).join(' · ')}</td><td className="text-right font-bold">{g.made}</td><td className="text-right text-sky-400">{g.recd}</td></tr>)}</tbody></table>
       <p className="text-xs text-slate-500 mt-2">Columns: factory - roller size, drawing, tools made, total made, total received at plant.</p></section>
-            <section className={card}><h2 className="text-xl font-bold mb-1">Tooling consumption · {period}</h2>
-      <p className="text-slate-400 text-sm mb-3">Tools made (confirmed by CNC) against rollers forged, from your month-end entries.</p>
-      <label className="block mb-3"><span className="block text-sm font-semibold text-slate-300 mb-1">Search roller size</span>
-        <input className="h-14 rounded-xl bg-slate-900 border-2 border-slate-700 px-3 text-xl w-full" value={csq} onChange={e => setCsq(e.target.value)}/></label>
-      <div className="overflow-x-auto rounded-xl border border-slate-800"><table className="w-full min-w-[700px] text-left">
-        <thead className="bg-slate-800 text-slate-300 text-sm"><tr>{['Roller size', 'Tool', 'Tools made', 'Rollers forged', 'Tools per 10,000 rollers', 'Rollers per tool'].map(h => <th key={h} className="px-3 py-2 whitespace-nowrap">{h}</th>)}</tr></thead>
-        <tbody>{consCalc.map(r => <tr key={`${r.f}|${r.rid}|${r.kind}`} className="border-t border-slate-800">
-          <td className="px-3 py-2 font-bold whitespace-nowrap">{rollerLabel(r.f, r.size)}</td><td className="px-3 py-2">{r.kind}</td>
-          <td className="px-3 py-2">{r.made.toLocaleString('en-IN')}</td>
-          <td className="px-3 py-2">{r.rollers ? r.rollers.toLocaleString('en-IN') : '—'}</td>
-          <td className="px-3 py-2 font-extrabold text-amber-300">{r.rollers ? (r.made / r.rollers * 10000).toFixed(1) : '—'}</td>
-          <td className="px-3 py-2 font-bold">{r.rollers && r.made ? Math.round(r.rollers / r.made).toLocaleString('en-IN') : '—'}</td></tr>)}
-          {!consCalc.length && <tr><td colSpan={6} className="px-3 py-6 text-center text-slate-500">No tools made in this period.</td></tr>}</tbody></table></div>
-      <p className="text-xs text-slate-500 mt-2">{consMissing ? `${consMissing} line${consMissing === 1 ? '' : 's'} show “—” because no rollers-forged figure is entered for that size in this period (use the month-end entry just below). ` : ''}Tools are made some days before they are used, so read a quarter or the whole year rather than a single month.</p></section>
+    
           <Planner dels={allD} />
               <ShiftReports rs={rs} re={re} fsel={fsel} period={period} />
               <StockFreshness />
-        <MonthlyEntry />
-
+       
+ 
     <section className={card}><h2 className="text-xl font-bold mb-3">Export (CSV, opens in Excel)</h2>
       <div className="flex gap-3 items-center flex-wrap mb-4"><label className="text-slate-400">From <input type="date" value={from} onChange={e => setFrom(e.target.value)} className="bg-slate-800 rounded-lg p-2 text-slate-100"/></label>
         <label className="text-slate-400">To <input type="date" value={to} onChange={e => setTo(e.target.value)} className="bg-slate-800 rounded-lg p-2 text-slate-100"/></label>
@@ -258,44 +225,6 @@ function Dashboard() {
 
 const URGENCY_LABEL: Record<string, string> = { URGENT_MACHINE_DOWN: 'Breakdown / Line Down', URGENT: 'Urgent', BUFFER_NEXT_SHIFT: 'Normal' };
 export default function Page() { return <Guard allow={['owner']}><Dashboard/></Guard>; }
-function MonthlyEntry() {
-  const now = new Date(Date.now() + 330 * 60000);
-  const months = Array.from({ length: 18 }, (_, i) => { const d = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - i, 1)); return { v: d.toISOString().slice(0, 10), t: d.toLocaleString('en-IN', { month: 'long', year: 'numeric', timeZone: 'UTC' }) }; });
-  const [fac, setFac] = useState<string>(FACTORIES[0]); const [mon, setMon] = useState(months[1].v);   // starts on last month, the one you usually enter
-  const [rs, setRs] = useState<RollerMaster[]>([]); const [vals, setVals] = useState<Record<string, string>>({});
-  const [q, setQ] = useState(''); const [msg, setMsg] = useState('');
-  useEffect(() => { (async () => {
-    const [r, m] = await Promise.all([
-      supabase.from('roller_master').select('*').eq('factory_id', fac),
-      supabase.from('monthly_production').select('*').eq('factory_id', fac).eq('month', mon)]);
-    setRs(((r.data ?? []) as unknown as RollerMaster[]).sort((a, b) => a.roller_size.localeCompare(b.roller_size, undefined, { numeric: true })));
-    const v: Record<string, string> = {}; ((m.data ?? []) as unknown as MonthlyProduction[]).forEach(x => { v[x.roller_id] = String(x.rollers_forged); });
-    setVals(v); setMsg('');
-  })(); }, [fac, mon]);
-  const save = async () => {
-    const rows = Object.entries(vals).filter(([, n]) => n.trim() !== '').map(([roller_id, n]) => ({ factory_id: fac, roller_id, month: mon, rollers_forged: Math.max(0, Math.round(+n.replace(/,/g, '') || 0)), updated_at: new Date().toISOString() }));
-    if (!rows.length) { setMsg('Nothing to save.'); return; }
-    const { error } = await supabase.from('monthly_production').upsert(rows, { onConflict: 'factory_id,roller_id,month' });
-    setMsg(error ? `Could not save: ${error.message}` : `Saved ${rows.length} size${rows.length === 1 ? '' : 's'}.`);
-  };
-  const s = q.trim().toLowerCase(); const shown = rs.filter(r => !s || r.roller_size.toLowerCase().includes(s));
-  const total = Object.values(vals).reduce((a, n) => a + (Math.round(+n.replace(/,/g, '')) || 0), 0);
-  const lbl = 'block text-sm font-semibold text-slate-300 mb-1', fld = 'h-14 rounded-xl bg-slate-900 border-2 border-slate-700 px-3 text-xl w-full';
-  return (<section className={card}><h2 className="text-xl font-bold mb-1">Rollers forged · month-end entry</h2>
-    <p className="text-slate-400 text-sm mb-3">Copy the month total for each roller size from the daily production sheet. Leave blank if that size did not run. To remove a saved figure, type 0.</p>
-    <div className="grid sm:grid-cols-3 gap-3 mb-3">
-      <label className="block"><span className={lbl}>Factory</span><select className={fld} value={fac} onChange={e => setFac(e.target.value)}>{FACTORIES.map(f => <option key={f}>{f}</option>)}</select></label>
-      <label className="block"><span className={lbl}>Month</span><select className={fld} value={mon} onChange={e => setMon(e.target.value)}>{months.map(m => <option key={m.v} value={m.v}>{m.t}</option>)}</select></label>
-      <label className="block"><span className={lbl}>Search roller size</span><input className={fld} value={q} onChange={e => setQ(e.target.value)}/></label></div>
-    <div className="rounded-xl border border-slate-800 divide-y divide-slate-800 max-h-[60vh] overflow-y-auto">
-      {shown.map(r => <label key={r.id} className="flex items-center gap-3 px-3 py-2">
-        <span className="font-bold text-lg w-40 shrink-0">{rollerLabel(fac, r.roller_size)}</span>
-        <input inputMode="numeric" className={fld + ' text-right'} placeholder="0" value={vals[r.id] ?? ''} onChange={e => setVals({ ...vals, [r.id]: e.target.value })}/></label>)}
-      {!shown.length && <div className="p-4 text-slate-500">No roller sizes found.</div>}</div>
-    <div className="flex items-center gap-4 mt-3 flex-wrap"><button onClick={save} className="min-h-14 px-8 rounded-xl bg-green-600 text-white text-xl font-bold">Save month</button>
-      <span className="text-slate-400">Total rollers: <b className="text-slate-100">{total.toLocaleString('en-IN')}</b></span><span className="text-amber-300">{msg}</span></div>
-  </section>);
-}
 
 function Planner({ dels }: { dels: DeliveryFull[] }) {
   const [mp, setMp] = useState<MonthlyProduction[]>([]); const [rolls, setRolls] = useState<RollerMaster[]>([]);

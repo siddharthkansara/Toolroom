@@ -225,6 +225,15 @@ const periodLabel = per === 'y' ? `FY ${fy}-${String(fy + 1).slice(2)}` : per ==
     if (error) alert('Could not close: ' + error.message); reload();
   }
 
+    async function raise(ids: string[], to: Priority) {   // only tools still QUEUED, and only upwards (checked in the database too)
+    if (!confirm(`Change ${ids.length > 1 ? `these ${ids.length} tools` : 'this tool'} to ${URGENCY[to].label}?`)) return;
+    const { error } = await rpc('order_set_priority', { p_ids: ids, p_priority: to });
+    if (error) alert('Could not change: ' + error.message); reload();
+  }
+  const raiseBtns = (ids: string[], cur: Priority, cls = 'min-h-11', what = '') => cur === 'URGENT_MACHINE_DOWN' ? null : (<div className="flex gap-2 mt-2">
+    {cur === 'BUFFER_NEXT_SHIFT' && <button onClick={() => raise(ids, 'URGENT')} className={`flex-1 rounded-lg bg-amber-500 text-slate-950 font-bold ${cls}`}>⬆ Make Urgent{what}</button>}
+    <button onClick={() => raise(ids, 'URGENT_MACHINE_DOWN')} className={`flex-1 rounded-lg bg-red-600 text-white font-bold ${cls}`}>⬆ Make Breakdown{what}</button></div>);
+
   const orderItem = (o: OrderFull, st: string) => (<div key={o.id} className={`rounded-lg bg-slate-900 p-3 ${o.priority !== 'BUFFER_NEXT_SHIFT' ? `border-l-4 ${URGENCY[o.priority].border}` : ''}`}>
     <div className="text-lg font-bold">{tname(o)} × {o.quantity}{(o.qty_made ?? 0) > 0 ? ` · made ${o.qty_made}, ${o.quantity - o.qty_made!} to go` : ''}</div>
     <div className="text-slate-300">{dims(o)}</div>
@@ -233,7 +242,8 @@ const periodLabel = per === 'y' ? `FY ${fy}-${String(fy + 1).slice(2)}` : per ==
     {o.notes && <div className="text-sm text-amber-400 mt-1">📝 {o.notes}</div>}
     <div className="flex gap-2 mt-2">
       {st === 'QUEUED' && !o.qty_made && <button onClick={() => del([o.id])} className="flex-1 rounded-lg bg-red-800 font-bold">🗑 Delete</button>}
-      {st === 'QUEUED' && (o.qty_made ?? 0) > 0 && <button onClick={() => closeRest(o)} className="flex-1 rounded-lg bg-amber-700 font-bold">Close remaining</button>}</div></div>);
+            {st === 'QUEUED' && (o.qty_made ?? 0) > 0 && <button onClick={() => closeRest(o)} className="flex-1 rounded-lg bg-amber-700 font-bold">Close remaining</button>}</div>
+    {st === 'QUEUED' && raiseBtns([o.id], o.priority)}</div>);
   const batchItem = (d: DeliveryFull, st: string) => { const o = d.ord!; return (<div key={d.id} className="rounded-lg bg-slate-900 p-3">
     <div className="text-lg font-bold">{tname(o)} · batch of {d.qty_made}{st === 'RECEIVED' ? ` · got ${d.qty_received}` : ''}</div>
     <div className="text-slate-300">{dims(o)}</div>
@@ -391,16 +401,18 @@ const periodLabel = per === 'y' ? `FY ${fy}-${String(fy + 1).slice(2)}` : per ==
         <div className="flex justify-between items-start gap-3"><div>
           <div className="text-2xl font-bold">{rollerLabel(f.factory_id, f.roller?.roller_size ?? '—')} <span className="text-slate-400 text-base font-normal">Drg {f.roller?.customer_drg ?? '—'}</span></div>
           <div className="text-slate-400">{f.roller?.party_name ? `Party: ${f.roller.party_name} · ` : ''}{mcode(f.machine_id)}</div>
-          <div className="text-slate-400 text-sm">Ordered {dt(f.created_at)} · {URGENCY[f.priority].label}{f.roller_qty ? ` · ${f.roller_qty.toLocaleString('en-IN')} rollers to forge` : ''}</div></div>
+          <div className="text-slate-400 text-sm">Ordered {dt(f.created_at)}{f.roller_qty ? ` · ${f.roller_qty.toLocaleString('en-IN')} rollers to forge` : ''}</div></div>
           <button aria-label="Close" onClick={() => setView(null)} className="w-14 rounded-xl bg-slate-800"><X className="mx-auto"/></button></div>
         <div className="mt-4 space-y-2">{viewItems.map(o => <div key={o.id} className="rounded-xl bg-slate-800 p-3">
           <div className="flex items-center gap-3"><div className="flex-1"><div className="text-lg font-bold">{tname(o)} × {o.quantity}</div>
-            <div className="text-slate-300 text-sm">{dims(o)}</div><div className="text-sm text-slate-400">Header {mcode(o.machine_id)}</div>
+            <div className="text-slate-300 text-sm">{dims(o)}</div><div className="text-sm text-slate-400">Header {mcode(o.machine_id)} · {URGENCY[o.priority].short}</div>
             <div className="text-sm text-slate-400">{stOf(o)}{(o.qty_made ?? 0) > 0 ? ` · made ${o.qty_made} · remaining ${Math.max(0, o.quantity - o.qty_made!)}` : ''}</div>{o.notes && <div className="text-sm text-amber-400">📝 {o.notes}</div>}</div>
             {o.status === 'QUEUED' && !o.qty_made && <button onClick={() => del([o.id])} className="px-4 rounded-xl bg-red-800 min-h-12">🗑 Delete</button>}
-            {o.status === 'QUEUED' && (o.qty_made ?? 0) > 0 && <button onClick={() => closeRest(o)} className="px-4 rounded-xl bg-amber-700 min-h-12">Close remaining</button>}</div>
+                        {o.status === 'QUEUED' && (o.qty_made ?? 0) > 0 && <button onClick={() => closeRest(o)} className="px-4 rounded-xl bg-amber-700 min-h-12">Close remaining</button>}</div>
+          {o.status === 'QUEUED' && raiseBtns([o.id], o.priority, 'min-h-12')}
           {deliveries.filter(d => d.order_id === o.id).sort((a, b) => +new Date(a.made_at) - +new Date(b.made_at)).map((d, i) =>
             <div key={d.id} className="text-sm text-slate-300 mt-1">Batch {i + 1}: made {d.qty_made} · {dt(d.made_at)} · {d.status === 'RECEIVED' ? `received ${d.qty_received}` : 'at CNC, not received yet'}{d.note ? ` · 📝 ${d.note}` : ''}</div>)}</div>)}</div>
+                {(() => { const w = viewItems.filter(o => o.status === 'QUEUED'); return w.length > 1 ? raiseBtns(w.map(o => o.id), w.some(o => o.priority === 'BUFFER_NEXT_SHIFT') ? 'BUFFER_NEXT_SHIFT' : w.some(o => o.priority === 'URGENT') ? 'URGENT' : 'URGENT_MACHINE_DOWN', 'min-h-14', ' (whole order)') : null; })()}
         {queued.length > 1 && <button onClick={() => del(queued.map(o => o.id))} className="mt-3 w-full rounded-xl bg-red-900 min-h-14 text-lg">🗑 Delete all waiting tools in this order</button>}
         <p className="text-xs text-slate-500 mt-3">Only tools still waiting in the queue can be deleted. Once a tool is on the lathe, ask the CNC operator to stop the job.</p>
       </div></div>); })()}

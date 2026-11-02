@@ -1,8 +1,8 @@
 'use client';
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { supabase, rpc } from '@/lib/supabase';
 import { Guard } from '@/lib/auth';
-import { useOrders, dt, gkey, DSEL } from '@/lib/useOrders';
+import { useOrders, dt, gkey, DSEL, chime } from '@/lib/useOrders';
 import { FACTORIES, FCHIP, mname as mcode, rollerLabel } from '@/lib/factories';
 import { URGENCY, cmpQueue } from '@/lib/urgency';
 import { TOOL_LABEL, type OrderFull, type DeliveryFull } from '@/types/database';
@@ -64,11 +64,23 @@ function Cnc() {
   const pAll = progress(inWin);
   const winLabel = { today: 'today', week: 'this week', month: 'this month' }[win];
   const batchesOf = (f: string) => groupBy(waiting.filter(o => o.factory_id === f), gkey)
-    .map(([k, items]) => ({ k, items: items.sort((a, b) => a.slip_no - b.slip_no) }))
+    .map(([k, items]) => ({ k, items: items.sort((a, b) => URGENCY[a.priority].rank - URGENCY[b.priority].rank || a.slip_no - b.slip_no) }))
     .sort((a, b) => cmpQueue(a.items[0], b.items[0]));   // Breakdown > Urgent > Normal, then oldest first
-  const rushParts = FACTORIES.map(f => { const b = batchesOf(f); const x = b.filter(c => c.items[0].priority === 'URGENT_MACHINE_DOWN').length; const u = b.filter(c => c.items[0].priority === 'URGENT').length;
+    const rushParts = FACTORIES.map(f => { const w = waiting.filter(o => o.factory_id === f); const x = w.filter(o => o.priority === 'URGENT_MACHINE_DOWN').length; const u = w.filter(o => o.priority === 'URGENT').length;
     return x || u ? `${f}: ${[x ? `${x} breakdown` : '', u ? `${u} urgent` : ''].filter(Boolean).join(', ')}` : ''; }).filter(Boolean);
   const anyBreakdown = waiting.some(o => o.priority === 'URGENT_MACHINE_DOWN');
+    const loaded = orders.length > 0;
+  const changedKey = waiting.filter(o => o.priority_changed_at).map(o => `${o.id}@${o.priority_changed_at}`).join(',');   // plain text, so it is safe in the effect list
+  const seenPrio = useRef<Set<string> | null>(null); const [prioNote, setPrioNote] = useState('');
+  useEffect(() => {   // chime + banner when the toolroom raises a tool's priority while this screen is open
+    if (!loaded) return;
+    const cur = changedKey ? changedKey.split(',') : [];
+    if (!seenPrio.current) { seenPrio.current = new Set(cur); return; }   // first load: remember what is already marked, do not announce it
+    const seen = seenPrio.current; const fresh = cur.filter(x => !seen.has(x)); cur.forEach(x => seen.add(x));
+    if (!fresh.length) return;
+    chime(); setPrioNote(`⬆ Priority raised for ${fresh.length} tool${fresh.length > 1 ? 's' : ''}. Check the marked orders.`);
+    setTimeout(() => setPrioNote(''), 10000);
+  }, [changedKey, loaded]);
   const ready = deliveries.filter(d => d.status === 'READY' && d.ord && (!fsel || d.factory_id === fsel));
   const cutoff = hd ? (() => { const d = new Date(); d.setHours(0, 0, 0, 0); d.setDate(d.getDate() - (hd - 1)); return +d; })() : 0;
   const hlist = hist.filter(d => d.ord && (!fsel || d.factory_id === fsel) && +new Date(d.made_at) >= cutoff && (d.ord.roller?.roller_size ?? '').toLowerCase().includes(hs.trim().toLowerCase()));
@@ -103,18 +115,19 @@ function Cnc() {
     setDone(null); reload();
   }
 
-  const bcard = ({ k, items }: { k: string; items: OrderFull[] }) => { const f = items[0]; const U = URGENCY[f.priority]; const isOpen = !!openB[k];
-    return (<div key={k} className={`rounded-xl border-2 bg-slate-900 ${U.border} ${f.priority === 'URGENT_MACHINE_DOWN' ? 'urgent' : ''}`}>
+    const bcard = ({ k, items }: { k: string; items: OrderFull[] }) => { const f = items[0]; const isOpen = !!openB[k];
+        return (<div key={k} className="rounded-xl border-2 border-slate-700 bg-slate-900">
       <button onClick={() => setOpenB({ ...openB, [k]: !isOpen })} className="w-full text-left px-4 py-3 min-h-20 space-y-1">
         <div className="flex items-center gap-2 flex-wrap"><span className="text-2xl font-extrabold">{rollerLabel(f.factory_id, f.roller?.roller_size ?? '—')}</span>
-          <span className={`${U.chip} rounded px-2 text-sm font-bold`}>{U.short}</span>{items.some(o => o.notes) && <span title="Has a note">📝</span>}
+                    {items.some(o => o.priority_changed_at) && <span className="rounded px-2 text-sm font-bold bg-blue-600 text-white">⬆ Priority changed</span>}{items.some(o => o.notes) && <span title="Has a note">📝</span>}
           <span className="ml-auto text-xl">{isOpen ? '▲' : '▼'}</span></div>
         <div className="text-slate-400">{mcode(f.machine_id)} · requested {when(f.created_at)}</div>
-        <div className="text-slate-200">{items.map(o => `${nm(o)} ×${rem(o)}`).join(', ')}</div></button>
+               <div className="text-slate-200 flex gap-x-4 gap-y-1 flex-wrap">{items.map(o => <span key={o.id}>{nm(o)} ×{rem(o)}{o.priority !== 'BUFFER_NEXT_SHIFT' && <span className={`${URGENCY[o.priority].chip} rounded px-1.5 ml-1 text-xs font-bold`}>{URGENCY[o.priority].short}</span>}</span>)}</div></button>
       {isOpen && <div className="px-4 pb-4 space-y-2">
         <div className="text-sm text-slate-400">Drg {f.roller?.customer_drg ?? '—'}{f.roller?.party_name ? ` · Party ${f.roller.party_name}` : ''}{f.roller_qty ? ` · ${f.roller_qty.toLocaleString('en-IN')} rollers to forge` : ''} · Slip #{f.slip_no}</div>
-        {items.map(o => <div key={o.id} className="rounded-xl bg-slate-800 p-3 flex items-center gap-3 flex-wrap">
+                {items.map(o => <div key={o.id} className={`rounded-xl bg-slate-800 p-3 flex items-center gap-3 flex-wrap ${o.priority !== 'BUFFER_NEXT_SHIFT' ? `border-l-4 ${URGENCY[o.priority].border}` : ''}`}>
           <div className="flex-1 min-w-40"><div className="text-xl font-bold text-amber-300">{nm(o)} · {rem(o)} to make</div>
+            {o.priority !== 'BUFFER_NEXT_SHIFT' && <div className="flex items-center gap-2 flex-wrap"><span className={`${URGENCY[o.priority].chip} rounded px-2 text-sm font-bold`}>{URGENCY[o.priority].short}</span>{o.priority_changed_at && <span className="text-sm font-semibold text-amber-300">⬆ raised from {URGENCY[o.priority_was ?? 'BUFFER_NEXT_SHIFT'].short} · {dt(o.priority_changed_at)}</span>}</div>}
             <div className="text-slate-300">{det(o)}</div>
             {o.notes && <div className="text-amber-300 font-semibold">📝 {o.notes}</div>}
             <div className="text-sm text-slate-400">Ordered {o.quantity}{(o.qty_made ?? 0) > 0 ? ` · already made ${o.qty_made}` : ''}</div></div>
@@ -161,6 +174,7 @@ function Cnc() {
             return <div key={f}><div className="flex justify-between items-center text-sm mb-1"><span className="flex items-center gap-2"><FTag f={f}/>{x.made} of {x.ord} pcs</span><b className="text-base">{x.pct == null ? '—' : `${x.pct}%`}</b></div>
               <div className="h-4 rounded-full bg-slate-800 overflow-hidden"><div className={`${FCHIP[f] ?? 'bg-slate-500'} h-4 rounded-full`} style={{ width: `${x.pct ?? 0}%` }}/></div></div>; })}</div></div>}
         <p className="text-xs text-slate-500">Progress = pieces made ÷ pieces ordered, for orders placed {winLabel}. Pieces the toolroom closed short are not counted against you.</p></section>}
+            {prioNote && <div className="rounded-xl p-3 font-bold bg-blue-600 text-white">{prioNote}</div>}
       {rushParts.length > 0 && <div className={`rounded-xl p-3 font-bold ${anyBreakdown ? 'bg-red-600 text-white' : 'bg-amber-500 text-slate-950'}`}>{anyBreakdown ? '🔴' : '🟠'} Rush waiting · {rushParts.join(' · ')}</div>}
       {running && (() => { const o = running; const d = done?.id === o.id ? done : null; const U = URGENCY[o.priority];
         return <div className="rounded-2xl bg-slate-900 border-4 border-blue-500 p-4">

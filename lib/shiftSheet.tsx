@@ -3,6 +3,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { supabase } from '@/lib/supabase';
 import { rollerLabel, mname } from '@/lib/factories';
 import { ProductionTable, UtilGrid } from '@/lib/production';
+import { ToolsUsed } from '@/lib/toolsUsed';
 import { TOOL_LABEL, type ToolType, type RollerMaster, type HeaderMachine, type HeaderOperator, type ShiftEntry, type ShiftTool, type ShiftSettings, type ShiftSheet as SheetRow } from '@/types/database';
 
 const inp = 'h-14 rounded-xl bg-slate-900 border-2 border-slate-700 px-3 text-xl w-full';
@@ -13,6 +14,7 @@ const btn2 = 'min-h-12 px-5 rounded-xl border-2 border-slate-700 bg-slate-900 te
 const num = (v: string) => Math.round(+v.replace(/,/g, '') || 0);
 const tn = (t: string) => TOOL_LABEL[t as ToolType] ?? t;
 const TOOLS: ToolType[] = ['DIE_TOP', 'BOTTOM', 'FACING_PUNCH', 'SHORT_PIN'];
+const NR_REASONS = ['Breakdown', 'No order / no wire', 'Power cut', 'Maintenance', 'Die change', 'Other'];
 type Shift = 'DAY' | 'NIGHT';
 const rpcData = <T,>(fn: string, args: object) => (supabase.rpc as unknown as (f: string, a: object) => Promise<{ data: T | null; error: { message: string } | null }>).call(supabase, fn, args);
 
@@ -84,7 +86,7 @@ function EntryForm({ factory, date, shift, machine, rolls, ops, init, onSaved, o
     {adding && <div className="flex gap-2 flex-wrap items-end"><label className="block flex-1 min-w-[12rem]"><span className={lbl}>New operator’s name</span><input className={inp} value={newOp} onChange={e => setNewOp(e.target.value)}/></label><button className={btn} onClick={addOp}>Add</button></div>}
     <div><div className="text-sm font-semibold text-slate-300 mb-1">Tools used (worn out)</div>
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">{TOOLS.map(k => <label key={k} className="block"><span className="block text-sm text-slate-300 mb-1">{tn(k)}</span><input inputMode="numeric" className={inp} value={t[k] ?? ''} onChange={e => setT({ ...t, [k]: e.target.value })}/></label>)}</div></div>
-    <label className="block"><span className={lbl}>Note (optional)</span><input className={inp} value={note} onChange={e => setNote(e.target.value)}/></label>
+    <label className="block"><span className={lbl}>Remarks (optional)</span><input className={inp} value={note} onChange={e => setNote(e.target.value)}/></label>
     <div className="flex gap-2 flex-wrap"><button className={btn} disabled={busy} onClick={save}>Save entry</button><button className={btn2} onClick={onCancel}>Cancel</button></div></div>);
 }
 
@@ -96,8 +98,7 @@ function EnterSheet({ factory, isOwner }: { factory: string; isOwner: boolean })
   const [entries, setEntries] = useState<ShiftEntry[]>([]); const [tools, setTools] = useState<Record<string, ShiftTool[]>>({});
   const [sheet, setSheet] = useState<SheetRow | null>(null); const [settings, setSettings] = useState<ShiftSettings>(FALLBACK);
   const [defs, setDefs] = useState<Record<string, { roller?: string; operator?: string }>>({});
-  const [form, setForm] = useState<{ machine: string; init: Init } | null>(null); const [msg, setMsg] = useState(''); const [del, setDel] = useState(''); const [busy, setBusy] = useState(false);
-
+    const [form, setForm] = useState<{ machine: string; init: Init } | null>(null); const [msg, setMsg] = useState(''); const [del, setDel] = useState(''); const [busy, setBusy] = useState(false); const [nr, setNr] = useState<string | null>(null); const [nrText, setNrText] = useState('');
   const loadOps = useCallback(async () => {
     const { data } = await supabase.from('header_operators').select('*').eq('factory_id', factory).order('name');
     setOps((data ?? []) as unknown as HeaderOperator[]);
@@ -126,7 +127,7 @@ function EnterSheet({ factory, isOwner }: { factory: string; isOwner: boolean })
     if (ent.length) { const { data } = await supabase.from('shift_tools').select('*').in('entry_id', ent.map(x => x.id)); ((data ?? []) as unknown as ShiftTool[]).forEach(x => (tl[x.entry_id] ??= []).push(x)); }
     setTools(tl);
   }, [factory, date, shift]);
-  useEffect(() => { setForm(null); setDel(''); setMsg(''); load(); }, [load]);
+   useEffect(() => { setForm(null); setDel(''); setMsg(''); setNr(null); load(); }, [load]);
   useEffect(() => { loadOps(); }, [loadOps]);
   useEffect(() => { if (!msg) return; const t = setTimeout(() => setMsg(''), 7000); return () => clearTimeout(t); }, [msg]);
 
@@ -137,11 +138,13 @@ function EnterSheet({ factory, isOwner }: { factory: string; isOwner: boolean })
   const done = machines.filter(m => entries.some(e => e.machine_id === m.id)).length; const allDone = machines.length > 0 && done === machines.length;
 
   const after = () => { setForm(null); setDel(''); load(); };
-  const notRunning = async (m: HeaderMachine) => {
+  const notRunning = async (m: HeaderMachine, reason: string) => {
+    if (!reason.trim()) { setMsg('Please tap or type the reason first.'); return; }
     setBusy(true);
-    const { error } = await rpcData('shift_entry_save', { p_id: null, p_factory: factory, p_date: date, p_shift: shift, p_machine: m.id, p_status: 'NOT_RUNNING', p_roller: null, p_operator: null, p_rollers: 0, p_tools: {}, p_note: '' });
+    const { error } = await rpcData('shift_entry_save', { p_id: null, p_factory: factory, p_date: date, p_shift: shift, p_machine: m.id, p_status: 'NOT_RUNNING', p_roller: null, p_operator: null, p_rollers: 0, p_tools: {}, p_note: reason.trim() });
     setBusy(false);
     if (error) { setMsg(`Could not save: ${error.message}`); return; }
+    setNr(null); setNrText('');
     setMsg(`${mname(m.id)} marked not running.`); window.dispatchEvent(new Event('stock-check')); after();
   };
   const remove = async (id: string) => {
@@ -179,17 +182,22 @@ function EnterSheet({ factory, isOwner }: { factory: string; isOwner: boolean })
       return (<div key={m.id} className="rounded-2xl border-2 border-slate-700 bg-slate-900 p-4 space-y-3">
         <div className="flex items-center gap-3 flex-wrap"><span className="text-2xl font-extrabold">{mname(m.id)}</span>
           <span className={`rounded-lg px-2 py-0.5 text-sm font-extrabold ${list.length ? 'bg-green-600 text-white' : 'bg-amber-500 text-slate-950'}`}>{list.length ? '✔ entered' : 'nothing yet'}</span>
-          {canEdit && !showForm && <div className="ml-auto flex gap-2 flex-wrap"><button className={btn2} disabled={busy} onClick={() => openForm(m)}>＋ Add entry</button>{!list.length && <button className={btn2} disabled={busy} onClick={() => notRunning(m)}>Not running</button>}</div>}</div>
+                   {canEdit && !showForm && nr !== m.id && <div className="ml-auto flex gap-2 flex-wrap"><button className={btn2} disabled={busy} onClick={() => openForm(m)}>＋ Add entry</button>{!list.length && <button className={btn2} disabled={busy} onClick={() => { setNr(m.id); setNrText(''); setForm(null); }}>Not running</button>}</div>}</div>
         {list.map(e => <div key={e.id} className="rounded-xl bg-slate-800 px-3 py-2 space-y-1">
-          {e.status === 'NOT_RUNNING' ? <div className="font-bold text-slate-300">Not running this shift</div>
+                   {e.status === 'NOT_RUNNING' ? <div><div className="font-bold text-slate-300">Not running this shift</div>{e.note && <div className="text-amber-300 text-sm font-semibold">Reason: {e.note}</div>}</div>
             : <><div className="flex items-center gap-2 flex-wrap"><span className="text-lg font-extrabold">{rollerLabel(factory, sizeOf.get(e.roller_id ?? '') ?? '—')}</span><span className="text-slate-300">{e.operator_id ? opName.get(e.operator_id) ?? 'Operator' : 'No operator'}</span><span className="ml-auto text-xl font-extrabold text-amber-300">{e.rollers_forged.toLocaleString('en-IN')} rollers{e.weight_kg != null ? ` · ${Number(e.weight_kg).toLocaleString('en-IN')} kg` : ''}</span></div>
               {(tools[e.id]?.length ?? 0) > 0 && <div className="text-slate-300">Tools used: {tools[e.id].map(x => `${tn(x.tool_type)} × ${x.qty}`).join(' · ')}</div>}
               {Object.keys(e.short ?? {}).length > 0 && <div className="text-amber-300 text-sm font-semibold">⚠ Stock was short: {Object.entries(e.short).map(([k, q]) => `${tn(k)} (${q})`).join(', ')}</div>}
-              {e.note && <div className="text-slate-400 text-sm">{e.note}</div>}</>}
+                            {e.note && <div className="text-slate-400 text-sm">Remarks: {e.note}</div>}</>}
           {canEdit && <div className="flex gap-2 flex-wrap pt-1">
             {e.status === 'RAN' && <button className={btn2} disabled={busy} onClick={() => openForm(m, e)}>Edit</button>}
             {del === e.id ? <><button className={btnRed} disabled={busy} onClick={() => remove(e.id)}>Yes, delete</button><button className={btn2} onClick={() => setDel('')}>Keep</button></> : <button className={btn2} onClick={() => setDel(e.id)}>Delete</button>}</div>}
         </div>)}
+                {nr === m.id && <div className="rounded-xl bg-slate-800 p-3 space-y-3">
+          <div className="text-lg font-bold">Why is {mname(m.id)} not running?</div>
+          <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">{NR_REASONS.map(r => <button key={r} onClick={() => setNrText(r === 'Other' ? '' : r)} className={`min-h-12 rounded-xl border-2 text-lg font-bold ${nrText === r ? 'border-amber-400 bg-amber-400/20' : 'border-slate-700 bg-slate-900'}`}>{r}</button>)}</div>
+          <label className="block"><span className={lbl}>Remarks (tap a reason above, or type)</span><input className={inp} value={nrText} onChange={e => setNrText(e.target.value)}/></label>
+          <div className="flex gap-2 flex-wrap"><button className={btn} disabled={busy || !nrText.trim()} onClick={() => notRunning(m, nrText)}>Save</button><button className={btn2} onClick={() => setNr(null)}>Cancel</button></div></div>}
         {showForm && form && <EntryForm key={form.init.id ?? 'new'} factory={factory} date={date} shift={shift} machine={m} rolls={rolls} ops={ops} init={form.init} onSaved={after} onCancel={() => setForm(null)} setMsg={setMsg} reloadOps={loadOps} reloadRolls={loadRolls}/>}
       </div>); })}
       {!machines.length && <p className="text-slate-500 text-center py-6">No header machines found for {factory}.</p>}</div>
@@ -199,15 +207,16 @@ function EnterSheet({ factory, isOwner }: { factory: string; isOwner: boolean })
 // ---- Records: the sheet as a table for any month, with totals and header utilisation ----
 function Records({ factory }: { factory: string }) {
   const now = ist(); const months = Array.from({ length: 24 }, (_, i) => { const d = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - i, 1)); return { v: d.toISOString().slice(0, 10), t: d.toLocaleString('en-IN', { month: 'long', year: 'numeric', timeZone: 'UTC' }) }; });
-  const [m, setM] = useState(months[0].v); const [view, setView] = useState<'table' | 'util'>('table');
+  const [m, setM] = useState(months[0].v); const [view, setView] = useState<'tools' | 'table' | 'util'>('tools');
   const next = new Date(Date.UTC(+m.slice(0, 4), +m.slice(5, 7), 1)).toISOString().slice(0, 10);   // first day of the next month
   return (<div className="space-y-4">
     <h2 className="text-2xl font-bold">Shift records · {factory}</h2>
-    <div className="grid sm:grid-cols-3 gap-3 items-end">
+    <div className="grid sm:grid-cols-4 gap-3 items-end">
       <label className="block"><span className={lbl}>Month</span><select className={inp} value={m} onChange={e => setM(e.target.value)}>{months.map(x => <option key={x.v} value={x.v}>{x.t}</option>)}</select></label>
+            <button onClick={() => setView('tools')} className={`min-h-14 rounded-xl border-2 text-lg font-bold ${view === 'tools' ? 'border-amber-400 bg-amber-400/20' : 'border-slate-700 bg-slate-900'}`}>🔧 Tools used</button>
       <button onClick={() => setView('table')} className={`min-h-14 rounded-xl border-2 text-lg font-bold ${view === 'table' ? 'border-amber-400 bg-amber-400/20' : 'border-slate-700 bg-slate-900'}`}>📋 Production table</button>
       <button onClick={() => setView('util')} className={`min-h-14 rounded-xl border-2 text-lg font-bold ${view === 'util' ? 'border-amber-400 bg-amber-400/20' : 'border-slate-700 bg-slate-900'}`}>📊 Header utilisation</button></div>
-    {view === 'table' ? <ProductionTable factory={factory} from={m} to={next}/> : <UtilGrid factory={factory} from={m} to={next}/>}
+        {view === 'tools' ? <ToolsUsed factory={factory} from={m} to={next}/> : view === 'table' ? <ProductionTable factory={factory} from={m} to={next}/> : <UtilGrid factory={factory} from={m} to={next}/>}
   </div>);
 }
 
