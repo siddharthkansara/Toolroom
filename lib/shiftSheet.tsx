@@ -3,8 +3,10 @@ import { useCallback, useEffect, useState } from 'react';
 import { supabase } from '@/lib/supabase';
 import { rollerLabel, mname } from '@/lib/factories';
 import { ProductionTable, UtilGrid } from '@/lib/production';
+import { RollerRates } from '@/lib/rollerRates';
 import { ToolsUsed } from '@/lib/toolsUsed';
 import { TOOL_LABEL, type ToolType, type RollerMaster, type HeaderMachine, type HeaderOperator, type ShiftEntry, type ShiftTool, type ShiftSettings, type ShiftSheet as SheetRow } from '@/types/database';
+import { SheetDownload } from '@/lib/sheetDownload';
 
 const inp = 'h-14 rounded-xl bg-slate-900 border-2 border-slate-700 px-3 text-xl w-full';
 const lbl = 'block text-sm font-semibold text-slate-300 mb-1';
@@ -30,18 +32,22 @@ const FALLBACK: ShiftSettings = { id: 1, day_start: '07:30:00', day_deadline: '1
 const win = (date: string, shift: Shift, s: ShiftSettings) => shift === 'DAY' ? { starts: at(date, s.day_start), deadline: at(date, s.day_deadline) } : { starts: at(date, s.night_start), deadline: at(date, s.night_deadline, 1) };
 const fmt = (ms: number | string) => new Date(ms).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata', day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit' });
 
-type Init = { id?: string; roller?: string; operator?: string; rollers?: string; tools?: Record<string, string>; note?: string; weight?: string };
+type Init = { id?: string; roller?: string; operator?: string; tools?: Record<string, string>; note?: string; weight?: string; batch?: string; heat?: string; rate?: string };
 
 // ---- One line: a header running one roller size ----
 function EntryForm({ factory, date, shift, machine, rolls, ops, init, onSaved, onCancel, setMsg, reloadOps, reloadRolls }: {
   factory: string; date: string; shift: Shift; machine: HeaderMachine; rolls: RollerMaster[]; ops: HeaderOperator[]; init: Init;
   onSaved: () => void; onCancel: () => void; setMsg: (m: string) => void; reloadOps: () => void; reloadRolls: () => void }) {
   const [f, setF] = useState(''); const [rid, setRid] = useState(init.roller ?? ''); const [op, setOp] = useState(init.operator ?? '');
-  const [n, setN] = useState(init.rollers ?? ''); const [t, setT] = useState<Record<string, string>>(init.tools ?? {}); const [note, setNote] = useState(init.note ?? ''); const [wt, setWt] = useState(init.weight ?? '');
+  const [t, setT] = useState<Record<string, string>>(init.tools ?? {}); const [note, setNote] = useState(init.note ?? ''); const [wt, setWt] = useState(init.weight ?? '');
+  const [batch, setBatch] = useState(init.batch ?? ''); const [heat, setHeat] = useState(init.heat ?? ''); const [rates, setRates] = useState<Record<string, number>>({});
+  useEffect(() => { rpcData<{ roller_id: string; rollers_per_kg: number | null }[]>('roller_rates_list', { p_factory: factory }).then(({ data }) => { const m: Record<string, number> = {}; (data ?? []).forEach(x => { if (x.rollers_per_kg != null) m[x.roller_id] = Number(x.rollers_per_kg); }); setRates(m); }); }, [factory]);
   const [addingSize, setAddingSize] = useState(false); const [newSize, setNewSize] = useState('');
   const [adding, setAdding] = useState(false); const [newOp, setNewOp] = useState(''); const [busy, setBusy] = useState(false);
   const list = rolls.filter(r => !f.trim() || r.roller_size.toLowerCase().includes(f.trim().toLowerCase())).sort((a, b) => a.roller_size.localeCompare(b.roller_size, undefined, { numeric: true }));
   const chosen = rid && list.some(r => r.id === rid) ? rid : list.length === 1 ? list[0].id : '';
+    const rate = chosen && init.rate && chosen === init.roller ? Number(init.rate) : chosen ? rates[chosen] : undefined;   // an edited line keeps the rate it was entered with
+  const kg = parseFloat(wt.replace(/,/g, '')); const calc = rate && kg > 0 ? Math.round(kg * rate) : null;
   const addSize = async () => {   // any roller size can be entered, even if no tools were ever ordered for it
     const name = newSize.trim();
     if (!name) { setMsg('Type the roller size.'); return; }
@@ -62,10 +68,14 @@ function EntryForm({ factory, date, shift, machine, rolls, ops, init, onSaved, o
   const save = async () => {
     if (!chosen) { setMsg('Choose the roller size.'); return; }
     if (!op) { setMsg('Choose the operator, or add a new one.'); return; }
-    if (n.trim() === '') { setMsg('Enter rollers forged (0 if none).'); return; }
+        if (!(kg > 0)) { setMsg('Enter the weight of the rollers forged, in kg.'); return; }
+    if (!rate) { setMsg('Rollers per kg is not set for this roller size. Ask the owner to set it.'); return; }
+    if (!batch.trim()) { setMsg('Enter the batch number.'); return; }
+    if (!heat.trim()) { setMsg('Enter the heat number.'); return; }
+
     const tools: Record<string, number> = {}; TOOLS.forEach(k => { const q = num(t[k] ?? ''); if (q > 0) tools[k] = q; });
     setBusy(true);
-    const { data, error } = await rpcData<{ id: string; short: Record<string, number> }>('shift_entry_save', { p_id: init.id ?? null, p_factory: factory, p_date: date, p_shift: shift, p_machine: machine.id, p_status: 'RAN', p_roller: chosen, p_operator: op, p_rollers: num(n), p_tools: tools, p_note: note, p_weight: wt.trim() === '' ? null : (+wt.replace(/,/g, '') || 0) });
+    const { data, error } = await rpcData<{ id: string; short: Record<string, number> }>('shift_entry_save', { p_id: init.id ?? null, p_factory: factory, p_date: date, p_shift: shift, p_machine: machine.id, p_status: 'RAN', p_roller: chosen, p_operator: op, p_rollers: null, p_tools: tools, p_note: note, p_weight: kg, p_batch: batch.trim(), p_heat: heat.trim() });
     setBusy(false);
     if (error) { setMsg(`Could not save: ${error.message}`); return; }
     const short = Object.entries(data?.short ?? {});
@@ -76,12 +86,18 @@ function EntryForm({ factory, date, shift, machine, rolls, ops, init, onSaved, o
     <h4 className="text-lg font-bold">{init.id ? 'Edit entry' : 'New entry'} · {mname(machine.id)}</h4>
     <div className="grid sm:grid-cols-2 gap-3">
       <label className="block"><span className={lbl}>Find roller size</span><input className={inp} placeholder="Type to search" value={f} onChange={e => setF(e.target.value)}/></label>
-      <div><label className="block"><span className={lbl}>Roller size that ran</span><select className={inp} value={chosen} onChange={e => setRid(e.target.value)}><option value="">Choose roller size</option>{list.map(r => <option key={r.id} value={r.id}>{r.roller_size}</option>)}</select></label>
+      <div><label className="block"><span className={lbl}>Roller size that ran</span><select className={inp} value={chosen} onChange={e => setRid(e.target.value)}><option value="">Choose roller size</option>{list.map(r => <option key={r.id} value={r.id}>{r.roller_size}{r.party_name ? ` · ${r.party_name}` : ''}</option>)}</select></label>
         <button className="mt-1 text-amber-300 font-bold underline min-h-10" onClick={() => setAddingSize(!addingSize)}>+ New roller size</button></div>
       <div><label className="block"><span className={lbl}>Operator</span><select className={inp} value={op} onChange={e => setOp(e.target.value)}><option value="">Choose operator</option>{ops.filter(o => o.active || o.id === op).map(o => <option key={o.id} value={o.id}>{o.name}</option>)}</select></label>
         <button className="mt-1 text-amber-300 font-bold underline min-h-10" onClick={() => setAdding(!adding)}>+ New operator</button></div>
-      <label className="block"><span className={lbl}>Rollers forged</span><input inputMode="numeric" className={inp} value={n} onChange={e => setN(e.target.value)}/></label>
-      <label className="block"><span className={lbl}>Weight forged, kg (optional)</span><input inputMode="decimal" className={inp} value={wt} onChange={e => setWt(e.target.value)}/></label></div>
+           <label className="block"><span className={lbl}>Weight of rollers forged, kg</span><input inputMode="decimal" className={inp} value={wt} onChange={e => setWt(e.target.value)}/></label>
+      <div><span className={lbl}>Rollers forged (calculated)</span>
+        <div className={`${inp} flex items-center font-extrabold`}>{calc != null ? <span className="text-amber-300">{calc.toLocaleString('en-IN')} <span className="text-sm font-normal text-slate-400">rollers at {rate} per kg</span></span>
+          : !chosen ? <span className="text-sm font-normal text-slate-400">Choose the roller size first</span>
+          : !rate ? <span className="text-sm font-bold text-red-400">Rollers per kg not set. Ask the owner.</span>
+          : <span className="text-sm font-normal text-slate-400">Enter the weight</span>}</div></div>
+      <label className="block"><span className={lbl}>Batch number</span><input autoCapitalize="characters" className={inp} value={batch} onChange={e => setBatch(e.target.value)}/></label>
+      <label className="block"><span className={lbl}>Heat number</span><input autoCapitalize="characters" className={inp} value={heat} onChange={e => setHeat(e.target.value)}/></label></div>
     {addingSize && <div className="flex gap-2 flex-wrap items-end"><label className="block flex-1 min-w-[12rem]"><span className={lbl}>New roller size</span><input className={inp} value={newSize} onChange={e => setNewSize(e.target.value)}/></label><button className={btn} onClick={addSize}>Add</button></div>}
     {adding && <div className="flex gap-2 flex-wrap items-end"><label className="block flex-1 min-w-[12rem]"><span className={lbl}>New operator’s name</span><input className={inp} value={newOp} onChange={e => setNewOp(e.target.value)}/></label><button className={btn} onClick={addOp}>Add</button></div>}
     <div><div className="text-sm font-semibold text-slate-300 mb-1">Tools used (worn out)</div>
@@ -131,7 +147,7 @@ function EnterSheet({ factory, isOwner }: { factory: string; isOwner: boolean })
   useEffect(() => { loadOps(); }, [loadOps]);
   useEffect(() => { if (!msg) return; const t = setTimeout(() => setMsg(''), 7000); return () => clearTimeout(t); }, [msg]);
 
-  const sizeOf = new Map(rolls.map(r => [r.id, r.roller_size])); const opName = new Map(ops.map(o => [o.id, o.name]));
+    const sizeOf = new Map(rolls.map(r => [r.id, r.roller_size])); const partyOf = new Map(rolls.map(r => [r.id, r.party_name])); const opName = new Map(ops.map(o => [o.id, o.name]));
   const w = win(date, shift, settings); const nowMs = Date.now();
   const notStarted = nowMs < w.starts; const open = nowMs <= w.deadline; const canEdit = !notStarted && (open || isOwner);
   const total = entries.reduce((a, e) => a + e.rollers_forged, 0);
@@ -157,10 +173,12 @@ function EnterSheet({ factory, isOwner }: { factory: string; isOwner: boolean })
     if (error) { setMsg(`Could not save: ${error.message}`); return; }
     setMsg(yes ? 'Shift sheet marked complete. Thank you.' : 'Shift sheet reopened.'); window.dispatchEvent(new Event('stock-check')); load();
   };
+  
   const openForm = (m: HeaderMachine, e?: ShiftEntry) => setForm({ machine: m.id, init: e
-    ? { id: e.id, roller: e.roller_id ?? undefined, operator: e.operator_id ?? undefined, rollers: String(e.rollers_forged), weight: e.weight_kg != null ? String(e.weight_kg) : '', tools: Object.fromEntries((tools[e.id] ?? []).map(x => [x.tool_type, String(x.qty)])), note: e.note ?? '' }
-    : { roller: m.current_roller_id ?? defs[m.id]?.roller, operator: defs[m.id]?.operator } });
+  ? { id: e.id, roller: e.roller_id ?? undefined, operator: e.operator_id ?? undefined, weight: e.weight_kg != null ? String(e.weight_kg) : '', batch: e.batch_no ?? '', heat: e.heat_no ?? '', rate: e.rollers_per_kg != null ? String(e.rollers_per_kg) : undefined, note: e.note ?? '', tools: Object.fromEntries((tools[e.id] ?? []).map(x => [x.tool_type, String(x.qty)])) }
+  : { roller: m.current_roller_id ?? defs[m.id]?.roller, operator: defs[m.id]?.operator } });
 
+  
   return (<div className="space-y-5">
     <h2 className="text-2xl font-bold">Shift Sheet · {factory}</h2>
     <div className="grid sm:grid-cols-3 gap-3 items-end">
@@ -185,7 +203,8 @@ function EnterSheet({ factory, isOwner }: { factory: string; isOwner: boolean })
                    {canEdit && !showForm && nr !== m.id && <div className="ml-auto flex gap-2 flex-wrap"><button className={btn2} disabled={busy} onClick={() => openForm(m)}>＋ Add entry</button>{!list.length && <button className={btn2} disabled={busy} onClick={() => { setNr(m.id); setNrText(''); setForm(null); }}>Not running</button>}</div>}</div>
         {list.map(e => <div key={e.id} className="rounded-xl bg-slate-800 px-3 py-2 space-y-1">
                    {e.status === 'NOT_RUNNING' ? <div><div className="font-bold text-slate-300">Not running this shift</div>{e.note && <div className="text-amber-300 text-sm font-semibold">Reason: {e.note}</div>}</div>
-            : <><div className="flex items-center gap-2 flex-wrap"><span className="text-lg font-extrabold">{rollerLabel(factory, sizeOf.get(e.roller_id ?? '') ?? '—')}</span><span className="text-slate-300">{e.operator_id ? opName.get(e.operator_id) ?? 'Operator' : 'No operator'}</span><span className="ml-auto text-xl font-extrabold text-amber-300">{e.rollers_forged.toLocaleString('en-IN')} rollers{e.weight_kg != null ? ` · ${Number(e.weight_kg).toLocaleString('en-IN')} kg` : ''}</span></div>
+                        : <><div className="flex items-center gap-2 flex-wrap"><span className="text-lg font-extrabold">{rollerLabel(factory, sizeOf.get(e.roller_id ?? '') ?? '—')}</span>{partyOf.get(e.roller_id ?? '') && <span className="text-slate-400 text-sm">{partyOf.get(e.roller_id ?? '')}</span>}<span className="text-slate-300">{e.operator_id ? opName.get(e.operator_id) ?? 'Operator' : 'No operator'}</span><span className="ml-auto text-xl font-extrabold text-amber-300">{e.rollers_forged.toLocaleString('en-IN')} rollers{e.weight_kg != null ? ` · ${Number(e.weight_kg).toLocaleString('en-IN')} kg` : ''}</span></div>
+                            {(e.batch_no || e.heat_no) && <div className="text-slate-300 text-sm">Batch {e.batch_no ?? '—'} · Heat {e.heat_no ?? '—'}{e.rollers_per_kg != null ? ` · ${e.rollers_per_kg} rollers per kg` : ''}</div>}
               {(tools[e.id]?.length ?? 0) > 0 && <div className="text-slate-300">Tools used: {tools[e.id].map(x => `${tn(x.tool_type)} × ${x.qty}`).join(' · ')}</div>}
               {Object.keys(e.short ?? {}).length > 0 && <div className="text-amber-300 text-sm font-semibold">⚠ Stock was short: {Object.entries(e.short).map(([k, q]) => `${tn(k)} (${q})`).join(', ')}</div>}
                             {e.note && <div className="text-slate-400 text-sm">Remarks: {e.note}</div>}</>}
@@ -216,14 +235,17 @@ function Records({ factory }: { factory: string }) {
             <button onClick={() => setView('tools')} className={`min-h-14 rounded-xl border-2 text-lg font-bold ${view === 'tools' ? 'border-amber-400 bg-amber-400/20' : 'border-slate-700 bg-slate-900'}`}>🔧 Tools used</button>
       <button onClick={() => setView('table')} className={`min-h-14 rounded-xl border-2 text-lg font-bold ${view === 'table' ? 'border-amber-400 bg-amber-400/20' : 'border-slate-700 bg-slate-900'}`}>📋 Production table</button>
       <button onClick={() => setView('util')} className={`min-h-14 rounded-xl border-2 text-lg font-bold ${view === 'util' ? 'border-amber-400 bg-amber-400/20' : 'border-slate-700 bg-slate-900'}`}>📊 Header utilisation</button></div>
+            <SheetDownload factory={factory} from={m} to={next}/>
         {view === 'tools' ? <ToolsUsed factory={factory} from={m} to={next}/> : view === 'table' ? <ProductionTable factory={factory} from={m} to={next}/> : <UtilGrid factory={factory} from={m} to={next}/>}
   </div>);
 }
 
 export function ShiftSheet({ factory, isOwner }: { factory: string; isOwner: boolean }) {
-  const [sub, setSub] = useState<'enter' | 'records'>('enter');
+  const [sub, setSub] = useState<'enter' | 'records' | 'rates'>('enter');
+  const tabs: [typeof sub, string][] = [['enter', '📝 Enter sheet'], ['records', '📊 Records']];
+  if (isOwner) tabs.push(['rates', '⚖ Rollers per kg']);
   return (<div className="space-y-4">
-    <div className="grid grid-cols-2 gap-2">{([['enter', '📝 Enter sheet'], ['records', '📊 Records']] as const).map(([v, l]) => <button key={v} onClick={() => setSub(v)} className={`min-h-14 rounded-xl border-2 text-lg font-bold ${sub === v ? 'border-amber-400 bg-amber-400/20' : 'border-slate-700 bg-slate-900'}`}>{l}</button>)}</div>
-    {sub === 'enter' ? <EnterSheet factory={factory} isOwner={isOwner}/> : <Records factory={factory}/>}
+    <div className={`grid gap-2 ${isOwner ? 'grid-cols-2 sm:grid-cols-3' : 'grid-cols-2'}`}>{tabs.map(([v, l]) => <button key={v} onClick={() => setSub(v)} className={`min-h-14 rounded-xl border-2 text-lg font-bold ${sub === v ? 'border-amber-400 bg-amber-400/20' : 'border-slate-700 bg-slate-900'}`}>{l}</button>)}</div>
+    {sub === 'enter' ? <EnterSheet factory={factory} isOwner={isOwner}/> : sub === 'records' ? <Records factory={factory}/> : <RollerRates factory={factory}/>}
   </div>);
 }

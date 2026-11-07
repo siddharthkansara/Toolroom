@@ -9,6 +9,9 @@ import { TOOL_LABEL, type OrderFull, type DeliveryFull, type Delivery, type Lath
 import { StockFreshness } from '@/lib/stockReminder';
 import { ShiftReports } from '@/lib/shiftReports';
 import { ToolPlanner } from '@/lib/planner';
+import { TodayView } from '@/lib/dashToday';
+import { LatheView } from '@/lib/latheView';
+import { ProductionView } from '@/lib/productionView';
 
 const fd = (d: string | null) => (d ? new Date(d).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata', dateStyle: 'medium', timeStyle: 'short' }) : '');
 const kind = (o: OrderFull) => (o.tooling ? TOOL_LABEL[o.tooling.tool_type] : o.custom_tool_name || 'Other tool');
@@ -123,9 +126,22 @@ function Dashboard() {
   const rep: Record<string, OrderFull[]> = {};
   orders.filter(o => ym(o.created_at) === month && (!fsel || o.factory_id === fsel)).forEach(o => (rep[`${o.factory_id}|${o.roller?.roller_size ?? '—'}`] ??= []).push(o));
   const chip = (on: boolean) => `px-5 min-h-12 rounded-xl border-2 text-lg font-bold ${on ? 'border-amber-400 bg-amber-400/20' : 'border-slate-700 bg-slate-900'}`;   // same look as the CNC page chips
-
+      const [view, setView] = useState<'today' | 'production' | 'lathe' | 'shifts' | 'plan'>('today'); const hide = (...v: string[]) => (v.includes(view) ? '' : 'hidden');
   return (<div className="p-6 max-w-7xl mx-auto space-y-8">
-    <section>
+        <div className="flex gap-2 flex-wrap">{([['today', 'Today'], ['production', 'Production'], ['lathe', 'Lathe'], ['shifts', 'Shifts'], ['plan', 'Plan & Reports']] as const).map(([v, l]) =>
+      <button key={v} onClick={() => setView(v)} className={`px-6 min-h-14 rounded-xl border-2 text-lg font-bold ${view === v ? 'border-amber-400 bg-amber-400/20' : 'border-slate-700 bg-slate-900'}`}>{l}</button>)}</div>
+       <div className="flex gap-2 flex-wrap items-center">{[null, ...FACTORIES].map(f => <button key={f ?? 'all'} onClick={() => setFsel(f)} className={chip(fsel === f)}>{f ?? 'All factories'}</button>)}</div>
+    {(view === 'production' || view === 'lathe' || view === 'shifts') && <div>
+      <div className="space-y-2 mb-3">
+        <div className="flex items-center gap-2 flex-wrap">
+          <button aria-label="Previous year" onClick={() => setFy(fy - 1)} className={chip(false)}>‹</button>
+          <span className="text-lg font-bold px-2">FY {fy}-{String(fy + 1).slice(2)} <span className="text-slate-400 font-normal text-sm">(1 Apr {fy} – 31 Mar {fy + 1})</span></span>
+          <button aria-label="Next year" onClick={() => setFy(fy + 1)} className={chip(false)}>›</button>
+          <label className="ml-auto text-slate-400 flex items-center gap-2">Jump to date <input type="date" onChange={e => { const v = e.target.value; if (!v) return; const d = new Date(v + 'T00:00:00'); setFy(d.getMonth() >= 3 ? d.getFullYear() : d.getFullYear() - 1); setMi((d.getMonth() + 9) % 12); setFocus(v); }} className="bg-slate-800 rounded-lg p-2 text-slate-100"/></label></div>
+        <div className="flex gap-2 flex-wrap">{(['year', ...MONTHS.map((_, i) => i)] as (number | 'year')[]).map(m =>
+          <button key={String(m)} onClick={() => { setMi(m); setFocus(null); }} className={chip(mi === m)}>{m === 'year' ? 'Full year' : MONTHS[m]}</button>)}</div></div>
+    </div>}
+    {/* <section className={hide('today')}>
       <div className="grid grid-cols-2 gap-2 mb-3">{([['today', "Today's job"], ['overall', 'Overall performance']] as const).map(([t, l]) =>
         <button key={t} onClick={() => setJobTab(t)} className={`h-16 rounded-xl border-2 text-lg font-bold ${jobTab === t ? 'border-amber-400 bg-amber-400/20' : 'border-slate-700 bg-slate-900'}`}>{l}</button>)}</div>
       <h2 className="text-xl font-bold mb-3">{jobTab === 'today' ? `Today's job · ${new Date().toLocaleDateString('en-IN', { weekday: 'long', day: '2-digit', month: 'short' })}` : 'Overall performance · all pending orders'}</h2>
@@ -141,39 +157,36 @@ function Dashboard() {
       <p className="text-xs text-slate-500 mt-2">{jobTab === 'today'
         ? 'Only orders placed today: pieces made so far ÷ pieces ordered. Older pending orders are under Overall performance. Pieces the toolroom closed short are not counted.'
         : 'All pending work: pieces made today ÷ (made today + still waiting), older pending orders included. Pieces the toolroom closed short are not counted.'}</p></section>
+ */}
+        {view === 'today' && <TodayView orders={orders} batches={allD} fsel={fsel} />}
+            {view === 'lathe' && <LatheView logs={logs} rs={rs} re={re} daily={mi !== 'year'} fsel={fsel} period={period} />}
+                {view === 'production' && <ProductionView data={allD} from={rs} to={re} mode={mi === 'year' ? 'year' : 'month'} fsel={fsel} period={period} />}
 
-    <section><h2 className="text-xl font-bold mb-3">Toolings completed · {period}</h2>
-      <div className="space-y-2 mb-3">
-        <div className="flex items-center gap-2 flex-wrap">
-          <button aria-label="Previous year" onClick={() => setFy(fy - 1)} className={chip(false)}>‹</button>
-          <span className="text-lg font-bold px-2">FY {fy}-{String(fy + 1).slice(2)} <span className="text-slate-400 font-normal text-sm">(1 Apr {fy} – 31 Mar {fy + 1})</span></span>
-          <button aria-label="Next year" onClick={() => setFy(fy + 1)} className={chip(false)}>›</button>
-          <label className="ml-auto text-slate-400 flex items-center gap-2">Jump to date <input type="date" onChange={e => { const v = e.target.value; if (!v) return; const d = new Date(v + 'T00:00:00'); setFy(d.getMonth() >= 3 ? d.getFullYear() : d.getFullYear() - 1); setMi((d.getMonth() + 9) % 12); setFocus(v); }} className="bg-slate-800 rounded-lg p-2 text-slate-100"/></label></div>
-        <div className="flex gap-2 flex-wrap">{(['year', ...MONTHS.map((_, i) => i)] as (number | 'year')[]).map(m =>
-          <button key={String(m)} onClick={() => { setMi(m); setFocus(null); }} className={chip(mi === m)}>{m === 'year' ? 'Full year' : MONTHS[m]}</button>)}</div></div>
+    {/* <section className={hide('production')}><h2 className="text-xl font-bold mb-3">Toolings completed · {period}</h2>
+      
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
         <div className={`${card} border-amber-500`}><div className="text-slate-400">Total Toolings Completed (all units)</div><div className="text-6xl font-extrabold mt-1">{total.made}</div><div className="text-sm text-slate-400 mt-1">received at plants: {total.recd}</div></div>
         {FACTORIES.map(f => { const r = rowFor(f); return <div key={f} className={card}><div className="text-slate-400 flex items-center gap-2">Toolings Completed · <FTag f={f}/></div><div className="text-6xl font-extrabold mt-1">{r.made}</div><div className="text-sm text-slate-400 mt-1">received at plant: {r.recd}</div></div>; })}</div>
       <p className="text-xs text-slate-500 mt-2">“Completed” means pieces the CNC operator confirmed as made. Each batch is counted on the day it was confirmed.</p></section>
-
-    <section className={card}><h2 className="text-xl font-bold mb-3">Factories at a glance</h2>
+ */}
+   {/*  <section className={card + ' ' + hide('today')}></div><h2 className="text-xl font-bold mb-3">Factories at a glance</h2>
       <div className="overflow-x-auto"><table className="w-full text-sm"><thead><tr className="text-left text-slate-400"><th className="py-1">Factory</th><th>Orders today</th><th>Pcs still to make</th><th>In progress</th><th>Pcs at CNC, not received</th><th>Made ({period})</th><th>Received ({period})</th></tr></thead>
         <tbody>{[...FACTORIES.map(f => [f, rowFor(f)] as const), ['Total', total] as const].map(([f, r]) => <tr key={f} className={`border-t border-slate-800 ${f === 'Total' ? 'font-bold' : ''}`}>
           <td className="py-2">{f === 'Total' ? 'Total' : <FTag f={f}/>}</td><td>{r.today}</td><td>{r.toMake}</td><td>{r.lathe}</td><td>{r.atCnc}</td><td>{r.made}</td><td>{r.recd}</td></tr>)}</tbody></table></div></section>
+ */}
+    
 
-    <div className="flex gap-2 flex-wrap items-center"><span className="text-slate-400">Show:</span>{[null, ...FACTORIES].map(f => <button key={f ?? 'all'} onClick={() => setFsel(f)} className={chip(fsel === f)}>{f ?? 'All factories'}</button>)}</div>
-
-    <section className={card}><h2 className="text-xl font-bold mb-3">Toolings made day by day · {period}</h2>
+   {/*  <section className={card+ '' + hide('production')}><h2 className="text-xl font-bold mb-3">Toolings made day by day · {period}</h2>
       <DailyProduction data={allD} from={rs} to={re} mode={mi === 'year' ? 'year' : 'month'} fsel={fsel} focus={focus}/></section>
-
-    <section className={card}><h2 className="text-xl font-bold mb-3">In progress on the CNC lathe</h2>
+ */}
+    {/* <section className={card + '' + hide('today')}><h2 className="text-xl font-bold mb-3">In progress on the CNC lathe</h2>
       {!lathe.length && <p className="text-slate-500">Lathe is idle.</p>}
       <div className="grid md:grid-cols-2 gap-3">{lathe.map(o => <div key={o.id} className="bg-slate-800 rounded-lg p-3">
         <div className="text-lg font-bold">{rollerLabel(o.factory_id, o.roller?.roller_size ?? '—')} <span className="text-slate-400 font-normal">Header {mcode(o.machine_id)} · Drg {o.roller?.customer_drg ?? '—'}</span></div>
         <div className="text-amber-300 text-lg">{tname(o)} · {rem(o)} to make <span className="text-slate-400">(ordered {o.quantity})</span></div>
-        <div className="text-sm text-slate-400">Requested {dt(o.created_at)}{o.started_lathe_at ? ` · started ${dt(o.started_lathe_at)}` : ''}</div></div>)}</div></section>
+        <div className="text-sm text-slate-400">Requested {dt(o.created_at)}{o.started_lathe_at ? ` · started ${dt(o.started_lathe_at)}` : ''}</div></div>)}</div></section> */}
 
-    <section className={card}><h2 className="text-xl font-bold mb-3">Lathe runtime · {period}</h2>
+    {/* <section className={card + '' + hide('lathe')}><h2 className="text-xl font-bold mb-3">Lathe runtime · {period}</h2>
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-4">
         <div className="bg-slate-800 rounded-lg p-4"><div className="text-slate-400">Total runtime</div><div className="text-4xl font-extrabold">{dur(totalSecs)}</div><div className="text-sm text-slate-400">{logs.length} cycles</div></div>
         {FACTORIES.map(f => { const sec = secsOf(f); const pct = totalSecs ? Math.round((sec / totalSecs) * 100) : 0;
@@ -186,8 +199,8 @@ function Dashboard() {
           <td>{l.tool_type && l.tool_type in TOOL_LABEL ? TOOL_LABEL[l.tool_type as keyof typeof TOOL_LABEL] : l.tool_type ?? '—'}</td><td>{dur(l.duration_seconds)}</td>
           <td className={l.action === 'COMPLETED' ? 'text-green-400' : 'text-amber-400'}>{l.action === 'COMPLETED' ? 'Completed' : 'Stopped'}{l.qty_made != null ? ` · ${l.qty_made} pcs` : ''}</td></tr>)}</tbody></table></div>}
       <p className="text-xs text-slate-500 mt-2">Runtime runs from Start to Completed or Stop. The table shows the latest 20 cycles. When a factory is chosen above, only that factory's cycles are counted.</p></section>
-
-    <section className={card}><h2 className="text-xl font-bold mb-3">Toolings made by roller size · {period}</h2>
+ */}
+    {/* <section className={card + '' + hide('production')}><h2 className="text-xl font-bold mb-3">Toolings made by roller size · {period}</h2>
       <label className="block mb-3"><span className="block text-sm font-semibold text-slate-300 mb-1">Search roller size</span>
         <input className="h-14 rounded-xl bg-slate-900 border-2 border-slate-700 px-3 text-xl w-full" placeholder="e.g. 31309 or PEW" value={rsq} onChange={e => setRsq(e.target.value)}/></label>
       {!grpList.length && <p className="text-slate-500">{Object.keys(grp).length ? 'No roller size matches your search.' : 'Nothing made in this period.'}</p>}
@@ -195,13 +208,13 @@ function Dashboard() {
         <td className="py-2 font-bold">{rollerLabel(g.f, g.size)}</td><td className="text-slate-400">{g.drg ?? ''}</td>
         <td>{Object.entries(g.tools).map(([k, n]) => `${n} ${k}`).join(' · ')}</td><td className="text-right font-bold">{g.made}</td><td className="text-right text-sky-400">{g.recd}</td></tr>)}</tbody></table>
       <p className="text-xs text-slate-500 mt-2">Columns: factory - roller size, drawing, tools made, total made, total received at plant.</p></section>
-    
-              <ToolPlanner fsel={fsel} />
-              <ShiftReports rs={rs} re={re} fsel={fsel} period={period} />
-              <StockFreshness />
+     */}
+              {view === 'plan' && <ToolPlanner fsel={fsel} />}
+              {view === 'shifts' && <ShiftReports rs={rs} re={re} fsel={fsel} period={period} />}
+              {view === 'shifts' && <StockFreshness />}
        
  
-    <section className={card}><h2 className="text-xl font-bold mb-3">Export (CSV, opens in Excel)</h2>
+    <section className={card + '' + hide('plan')}><h2 className="text-xl font-bold mb-3">Export (CSV, opens in Excel)</h2>
       <div className="flex gap-3 items-center flex-wrap mb-4"><label className="text-slate-400">From <input type="date" value={from} onChange={e => setFrom(e.target.value)} className="bg-slate-800 rounded-lg p-2 text-slate-100"/></label>
         <label className="text-slate-400">To <input type="date" value={to} onChange={e => setTo(e.target.value)} className="bg-slate-800 rounded-lg p-2 text-slate-100"/></label>
         <span className="text-slate-500 text-sm">Leave dates empty for everything.</span></div>
@@ -212,7 +225,7 @@ function Dashboard() {
       <div className="flex gap-2 flex-wrap"><button onClick={() => exportOrders(null)} className="px-5 rounded-lg bg-amber-500 text-slate-950 font-bold">⬇ All Orders</button>
         {FACTORIES.map(f => <button key={f} onClick={() => exportOrders(f)} className="px-5 rounded-lg bg-slate-800">⬇ Download {f}</button>)}</div></section>
 
-    <section><div className="flex items-center gap-4 mb-3 flex-wrap"><h2 className="text-xl font-bold">Monthly orders by roller size</h2>
+    <section className={hide('plan')}><div className="flex items-center gap-4 mb-3 flex-wrap"><h2 className="text-xl font-bold">Monthly orders by roller size</h2>
       <input type="month" value={month} onChange={e => setMonth(e.target.value)} className="bg-slate-800 rounded-lg p-2"/></div>
       {!Object.keys(rep).length && <p className="text-slate-500">No orders this month.</p>}
       <div className="grid xl:grid-cols-2 gap-4">{Object.entries(rep).sort().map(([key, list]) => <div key={key} className={card}>
@@ -227,37 +240,4 @@ function Dashboard() {
 const URGENCY_LABEL: Record<string, string> = { URGENT_MACHINE_DOWN: 'Breakdown / Line Down', URGENT: 'Urgent', BUFFER_NEXT_SHIFT: 'Normal' };
 export default function Page() { return <Guard allow={['owner']}><Dashboard/></Guard>; }
 
-/* function Planner({ dels }: { dels: DeliveryFull[] }) {
-  const [mp, setMp] = useState<MonthlyProduction[]>([]); const [rolls, setRolls] = useState<RollerMaster[]>([]);
-  const [fac, setFac] = useState<string>(FACTORIES[0]); const [rid, setRid] = useState(''); const [plan, setPlan] = useState('');
-  useEffect(() => { (async () => setMp(await pageAll<MonthlyProduction>((a, b) => supabase.from('monthly_production').select('*').order('month').range(a, b))))(); }, []);
-  useEffect(() => { (async () => {
-    const { data } = await supabase.from('roller_master').select('*').eq('factory_id', fac);
-    setRolls(((data ?? []) as unknown as RollerMaster[]).sort((a, b) => a.roller_size.localeCompare(b.roller_size, undefined, { numeric: true }))); setRid('');
-  })(); }, [fac]);
-  const planned = Math.round(+plan.replace(/,/g, '') || 0);
-  const res = (() => {
-    if (!rid) return null;
-        const last = mp.filter(m => m.factory_id === fac && m.roller_id === rid && m.rollers_forged > 0).sort((a, b) => b.month.localeCompare(a.month)).slice(0, 3);   // latest 3 months with an entry
-    const mons = new Set(last.map(m => m.month.slice(0, 7))); const forged = last.reduce((a, m) => a + m.rollers_forged, 0);
-    if (!forged) return { forged: 0, months: 0, rows: [] as { kind: string; made: number; per: number; need: number }[] };
-    const made: Record<string, number> = {};
-    dels.filter(d => d.factory_id === fac && d.ord?.roller_id === rid && mons.has(new Date(+new Date(d.made_at) + 330 * 60000).toISOString().slice(0, 7))).forEach(d => {
-      const o = d.ord!, kind = o.tooling ? TOOL_LABEL[o.tooling.tool_type] : o.custom_tool_name || 'Other tool'; made[kind] = (made[kind] ?? 0) + d.qty_made; });
-    return { forged, months: mons.size, rows: Object.entries(made).filter(([, n]) => n > 0).sort((a, b) => a[0].localeCompare(b[0])).map(([kind, n]) => ({ kind, made: n, per: forged / n, need: Math.ceil(planned * n / forged) })) };
-  })();
-  const lbl = 'block text-sm font-semibold text-slate-300 mb-1', fld = 'h-14 rounded-xl bg-slate-900 border-2 border-slate-700 px-3 text-xl w-full';
-  return (<section className={card}><h2 className="text-xl font-bold mb-1">Plan tooling for a roller size</h2>
-    <p className="text-slate-400 text-sm mb-3">Uses your past records, only the months where you entered rollers forged for that size.</p>
-    <div className="grid sm:grid-cols-3 gap-3 mb-4">
-      <label className="block"><span className={lbl}>Factory</span><select className={fld} value={fac} onChange={e => setFac(e.target.value)}>{FACTORIES.map(f => <option key={f}>{f}</option>)}</select></label>
-      <label className="block"><span className={lbl}>Roller size</span><select className={fld} value={rid} onChange={e => setRid(e.target.value)}><option value="">Choose roller size</option>{rolls.map(r => <option key={r.id} value={r.id}>{r.roller_size}</option>)}</select></label>
-      <label className="block"><span className={lbl}>Rollers planned</span><input inputMode="numeric" className={fld} placeholder="e.g. 1,00,000" value={plan} onChange={e => setPlan(e.target.value)}/></label></div>
-    {res && (res.rows.length ? <div className="space-y-2">{res.rows.map(r => <div key={r.kind} className="flex items-center justify-between gap-4 rounded-xl bg-slate-800 px-4 py-3 flex-wrap">
-        <span className="font-bold text-lg">{r.kind}</span>
-        <span className="text-slate-400 text-sm">1 tool per {Math.round(r.per).toLocaleString('en-IN')} rollers</span>
-        <span className="text-2xl font-extrabold text-amber-300">{planned ? `${r.need.toLocaleString('en-IN')} tools` : '—'}</span></div>)}
-      <p className="text-xs text-slate-500 pt-1">Based on latest {res.months} month{res.months === 1 ? '' : 's'} of records ({res.forged.toLocaleString('en-IN')} rollers forged). {res.months < 3 ? 'Only a few months of history, so treat this as a rough guide. ' : ''}This is total tools consumed; it is not reduced by tools already in stock at the plant.</p></div>
-      : <div className="text-slate-500">No history yet for this size. Enter rollers forged at month-end, and make sure tools were made in those months.</div>)}
-  </section>);
-} */
+

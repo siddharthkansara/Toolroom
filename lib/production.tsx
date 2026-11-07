@@ -4,7 +4,7 @@ import { supabase, rpc } from '@/lib/supabase';
 import { mname, FACTORIES } from '@/lib/factories';
 
 
-type Line = { work_date: string; shift: 'DAY' | 'NIGHT'; factory_id: string; machine_id: string; status: string; operator_name: string | null; roller_size: string | null; rollers: number; weight_kg: number | null; note: string | null };
+type Line = { work_date: string; shift: 'DAY' | 'NIGHT'; factory_id: string; machine_id: string; status: string; operator_name: string | null; roller_size: string | null; rollers: number; weight_kg: number | null; note: string | null; party_name: string | null; batch_no: string | null; heat_no: string | null; rollers_per_kg: number | null };
 type DayRow = { work_date: string; shift: 'DAY' | 'NIGHT'; rollers: number; weight_kg: number | null; rollers_cap: number; capacity: number };
 type Head = { id: string; factory_id: string; daily_capacity: number | null };
 
@@ -71,13 +71,13 @@ export function ProductionTable({ factory, from, to }: { factory: string; from: 
         ls.forEach((x, i) => {
           const cap = capOf.get(x.machine_id) ?? null; sR += x.rollers; sW += x.weight_kg ?? 0; if (cap) sRc += x.rollers;
           rows.push(<tr key={`${d}${sh}${i}`} className="border-t border-slate-800"><td className={td}>{dayLabel(d)}</td><td className={td}>{sh === 'DAY' ? '☀ Day' : '🌙 Night'}</td><td className={td + ' font-bold'}>{mname(x.machine_id)}</td>
-            <td className={td}>{x.status === 'NOT_RUNNING' ? <span className="text-slate-400">Not running</span> : x.operator_name ?? '—'}</td><td className={td + ' font-bold'}>{x.roller_size ?? '—'}</td>
-                        <td className={td}>{n0(x.rollers)}</td><td className={td}>{kg(x.weight_kg)}</td><td className={td}><P v={cap ? pct(x.rollers, cap / 2) : null}/></td><td className="px-3 py-2 text-slate-300 min-w-[12rem]">{x.note ?? ''}</td></tr>);
+            <td className={td}>{x.status === 'NOT_RUNNING' ? <span className="text-slate-400">Not running</span> : x.operator_name ?? '—'}</td><td className={td}>{x.party_name ?? '—'}</td><td className={td + ' font-bold'}>{x.roller_size ?? '—'}</td><td className={td}>{x.batch_no ?? '—'}</td><td className={td}>{x.heat_no ?? '—'}</td>
+                        <td className={td}>{n0(x.rollers)}</td><td className={td}>{kg(x.weight_kg)}</td><td className={td}>{x.rollers_per_kg != null ? Number(x.rollers_per_kg).toLocaleString('en-IN', { maximumFractionDigits: 4 }) : '—'}</td><td className={td}><P v={cap ? pct(x.rollers, cap / 2) : null}/></td><td className="px-3 py-2 text-slate-300 min-w-[12rem]">{x.note ?? ''}</td></tr>);
         });
-               rows.push(<tr key={`${d}${sh}s`} className={`border-t border-slate-700 ${sub}`}><td className={td} colSpan={5}>{sh === 'DAY' ? '☀ Day shift total' : '🌙 Night shift total'} · {dayLabel(d)}</td><td className={td}>{n0(sR)}</td><td className={td}>{kg(sW)}</td><td className={td}>{filt ? <span className="text-slate-500">—</span> : <P v={pct(sRc, sc)}/>}</td><td className={td}></td></tr>);
+               rows.push(<tr key={`${d}${sh}s`} className={`border-t border-slate-700 ${sub}`}><td className={td} colSpan={8}>{sh === 'DAY' ? '☀ Day shift total' : '🌙 Night shift total'} · {dayLabel(d)}</td><td className={td}>{n0(sR)}</td><td className={td}>{kg(sW)}</td><td className={td}></td><td className={td}>{filt ? <span className="text-slate-500">—</span> : <P v={pct(sRc, sc)}/>}</td><td className={td}></td></tr>);
         dR += sR; dW += sW; dRc += sRc; dS++;
       });
-            rows.push(<tr key={`${d}t`} className={`border-t border-slate-700 ${tot}`}><td className={td} colSpan={5}>Day total · {dayLabel(d)}</td><td className={td}>{n0(dR)}</td><td className={td}>{kg(dW)}</td><td className={td}>{filt ? <span className="text-slate-500">—</span> : <P v={pct(dRc, sc * dS)}/>}</td><td className={td}></td></tr>);
+            rows.push(<tr key={`${d}t`} className={`border-t border-slate-700 ${tot}`}><td className={td} colSpan={8}>Day total · {dayLabel(d)}</td><td className={td}>{n0(dR)}</td><td className={td}>{kg(dW)}</td><td className={td}></td><td className={td}>{filt ? <span className="text-slate-500">—</span> : <P v={pct(dRc, sc * dS)}/>}</td><td className={td}></td></tr>);
       tR += dR; tW += dW; tRc += dRc; tS += dS;
     });
   } else {
@@ -104,12 +104,12 @@ export function ProductionTable({ factory, from, to }: { factory: string; from: 
       <label className="block"><span className="block text-sm font-semibold text-slate-300 mb-1">Header (HD)</span><select className={sel} value={fHd} onChange={e => setFHd(e.target.value)}><option value="">All headers</option>{opts.hd.map(o => <option key={o} value={o}>{mname(o)}</option>)}</select></label>
       {filt && <button className="min-h-14 rounded-xl border-2 border-slate-700 bg-slate-900 text-lg font-bold" onClick={() => { setFOp(''); setFSize(''); setFHd(''); }}>Clear filters</button>}</div>}
     {mode === 'lines' && filt && <p className="text-sm text-amber-300">Filtered view: totals cover only the lines shown. Utilisation is shown on each line, not on the totals.</p>}
-    <div className="overflow-x-auto rounded-xl border border-slate-800"><table className="w-full text-left" style={{ minWidth: mode === 'lines' ? 980 : 600 }}>
-                 <thead className="bg-slate-800 text-slate-300 text-sm"><tr>{(mode === 'lines' ? ['Date', 'Shift', 'Header', 'Operator', 'Roller size', 'Rollers', 'Weight (kg)', 'Utilisation', 'Remarks'] : ['Date', 'Day shift', 'Night shift', 'Day total rollers', 'Weight (kg)', 'Day utilisation']).map(h => <th key={h} className={th}>{h}</th>)}</tr></thead>
+    <div className="overflow-x-auto rounded-xl border border-slate-800"><table className="w-full text-left" style={{ minWidth: mode === 'lines' ? 1500 : 600 }}>
+                 <thead className="bg-slate-800 text-slate-300 text-sm"><tr>{(mode === 'lines' ? ['Date', 'Shift', 'Header', 'Operator', 'Party', 'Roller size', 'Batch no.', 'Heat no.', 'Rollers', 'Weight (kg)', 'Rollers / kg', 'Utilisation', 'Remarks'] : ['Date', 'Day shift', 'Night shift', 'Day total rollers', 'Weight (kg)', 'Day utilisation']).map(h => <th key={h} className={th}>{h}</th>)}</tr></thead>
       <tbody>{rows}
-                {!rows.length && !busy && <tr><td colSpan={9} className="px-3 py-6 text-center text-slate-500">No shift sheet data in this period.</td></tr>}
+                {!rows.length && !busy && <tr><td colSpan={13} className="px-3 py-6 text-center text-slate-500">No shift sheet data in this period.</td></tr>}
         {rows.length > 0 && (mode === 'lines'
-                    ? <tr className={`border-t-2 border-slate-600 ${tot}`}><td className={td} colSpan={5}>Period total · average utilisation</td><td className={td}>{n0(tR)}</td><td className={td}>{kg(tW)}</td><td className={td}>{filt ? <span className="text-slate-500">—</span> : <P v={totalUtil}/>}</td><td className={td}></td></tr>
+                    ? <tr className={`border-t-2 border-slate-600 ${tot}`}><td className={td} colSpan={8}>Period total · average utilisation</td><td className={td}>{n0(tR)}</td><td className={td}>{kg(tW)}</td><td className={td}></td><td className={td}>{filt ? <span className="text-slate-500">—</span> : <P v={totalUtil}/>}</td><td className={td}></td></tr>
           : <tr className={`border-t-2 border-slate-600 ${tot}`}><td className={td} colSpan={3}>Period total · average utilisation</td><td className={td}>{n0(tR)}</td><td className={td}>{kg(tW)}</td><td className={td}><P v={totalUtil}/></td></tr>)}</tbody></table></div>
     <p className="text-xs text-slate-500">Utilisation = rollers forged ÷ the header’s capacity for the shift (half its daily capacity). Shift and day figures use all headers with a capacity set, so a header that did not run counts as 0%. Weight is what was typed on the sheet.</p>
   </div>);

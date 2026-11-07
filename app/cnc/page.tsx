@@ -6,6 +6,7 @@ import { useOrders, dt, gkey, DSEL, chime } from '@/lib/useOrders';
 import { FACTORIES, FCHIP, mname as mcode, rollerLabel } from '@/lib/factories';
 import { URGENCY, cmpQueue } from '@/lib/urgency';
 import { TOOL_LABEL, type OrderFull, type DeliveryFull } from '@/types/database';
+import { CncHistory } from '@/lib/cncHistory';
 
 const nm = (o: OrderFull) => (o.tooling ? TOOL_LABEL[o.tooling.tool_type] : o.custom_tool_name || 'Other tool');
 const det = (o: OrderFull) => { const k = o.tooling; if (!k) return o.custom_dimensions ?? '';
@@ -38,16 +39,9 @@ function Cnc() {
   const [showProg, setShowProg] = useState(false);
   const [done, setDone] = useState<{ id: string; qty: number } | null>(null); const [doneNote, setDoneNote] = useState('');
   const [openB, setOpenB] = useState<Record<string, boolean>>({});
-  const [hist, setHist] = useState<DeliveryFull[]>([]); const [hd, setHd] = useState(7); const [hs, setHs] = useState('');
 
-  useEffect(() => {   // every batch ever made (paged: Supabase returns max 1000 rows per request)
-    if (tab !== 'history') return;
-    (async () => { let all: DeliveryFull[] = [];
-      for (let i = 0; ; i += 1000) {
-        const { data } = await supabase.from('deliveries').select(DSEL).order('made_at', { ascending: false }).range(i, i + 999);
-        if (!data?.length) break; all = all.concat(data as unknown as DeliveryFull[]); if (data.length < 1000) break;
-      } setHist(all); })();
-  }, [tab, deliveries]);
+
+  
 
   const facs: string[] = fsel ? [fsel] : [...FACTORIES];
   const running = orders.find(o => o.status === 'ON_LATHE');   // one job at a time on the lathe
@@ -82,9 +76,7 @@ function Cnc() {
     setTimeout(() => setPrioNote(''), 10000);
   }, [changedKey, loaded]);
   const ready = deliveries.filter(d => d.status === 'READY' && d.ord && (!fsel || d.factory_id === fsel));
-  const cutoff = hd ? (() => { const d = new Date(); d.setHours(0, 0, 0, 0); d.setDate(d.getDate() - (hd - 1)); return +d; })() : 0;
-  const hlist = hist.filter(d => d.ord && (!fsel || d.factory_id === fsel) && +new Date(d.made_at) >= cutoff && (d.ord.roller?.roller_size ?? '').toLowerCase().includes(hs.trim().toLowerCase()));
-
+  
   // logs one lathe cycle; a failed log never blocks the operator
   async function logRun(o: OrderFull | undefined, action: 'COMPLETED' | 'STOPPED', qty: number | null) {
     if (!o?.started_lathe_at) return;   // no start time, nothing to measure
@@ -207,27 +199,7 @@ function Cnc() {
       <p className="text-slate-400">Made and waiting at your place. They leave this list once the plant confirms receipt. <b className="text-slate-100">{ready.reduce((a, d) => a + d.qty_made, 0)} pcs</b> waiting.</p>
       {fcols(ready)}</div>}
 
-    {tab === 'history' && <div className="space-y-3">
-      <div className="flex gap-2 flex-wrap items-center">{([[1, 'Today'], [7, '7 days'], [30, '30 days'], [0, 'All']] as const).map(([d, l]) =>
-        <button key={d} onClick={() => setHd(d)} className={`px-5 h-12 rounded-lg ${hd === d ? 'bg-amber-500 text-slate-950 font-bold' : 'bg-slate-800'}`}>{l}</button>)}
-        <span className="ml-auto text-slate-400">{FACTORIES.map(f => `${f} ${hlist.filter(d => d.factory_id === f).reduce((a, d) => a + d.qty_made, 0)}`).join(' · ')} · Total made <b className="text-slate-100 text-xl">{hlist.reduce((a, d) => a + d.qty_made, 0)}</b></span></div>
-      <input className="h-14 rounded-xl bg-slate-900 border-2 border-slate-700 px-3 text-xl w-full" placeholder="Search by roller size" value={hs} onChange={e => setHs(e.target.value)}/>
-            <div className="overflow-x-auto rounded-xl border border-slate-800 bg-slate-900">
-        <table className="w-full text-left min-w-[820px]">
-          <thead className="bg-slate-800 text-slate-300 text-sm"><tr>{['Made on', 'Factory', 'Roller size', 'Tool', 'Batch made', 'Order qty', 'Made so far', 'At plant', 'Note'].map(h => <th key={h} className="px-3 py-2 whitespace-nowrap">{h}</th>)}</tr></thead>
-          <tbody>{hlist.map(d => <tr key={d.id} className="border-t border-slate-800">
-            <td className="px-3 py-2 whitespace-nowrap">{dt(d.made_at)}</td>
-            <td className="px-3 py-2"><FTag f={d.factory_id}/></td>
-            <td className="px-3 py-2 font-bold whitespace-nowrap">{rollerLabel(d.factory_id, d.ord!.roller?.roller_size ?? '—')}</td>
-            <td className="px-3 py-2 text-amber-300 font-semibold">{nm(d.ord!)}</td>
-            <td className="px-3 py-2 font-extrabold text-lg">{d.qty_made}</td>
-            <td className="px-3 py-2">{d.ord!.quantity}</td>
-            <td className="px-3 py-2">{d.ord!.qty_made ?? 0}</td>
-            <td className="px-3 py-2 whitespace-nowrap">{d.status === 'READY' ? '📦 still at CNC' : `✔ ${d.qty_received ?? '?'} received`}</td>
-            <td className="px-3 py-2 text-sm">{d.note ?? ''}</td></tr>)}
-            {!hlist.length && <tr><td colSpan={9} className="px-3 py-6 text-center text-slate-500">No batches in this period.</td></tr>}</tbody>
-          {hlist.length > 0 && <tfoot className="border-t-2 border-slate-700 font-extrabold"><tr><td className="px-3 py-2" colSpan={4}>Total</td><td className="px-3 py-2 text-lg">{hlist.reduce((a, d) => a + d.qty_made, 0)}</td><td colSpan={4}/></tr></tfoot>}
-        </table></div></div>}
+        {tab === 'history' && <CncHistory fsel={fsel} sig={deliveries.length}/>}
   </div>);
 }
 

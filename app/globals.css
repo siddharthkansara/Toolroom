@@ -54,3 +54,4 @@ html[data-theme="light"] input:focus{outline:2px solid #c6613f;outline-offset:1p
 html[data-theme="light"] .topbar{background-image:none;background-color:#2b2a27;border-color:transparent;color:#faf9f5}
 html[data-theme="light"] .topbar .text-slate-400{color:#d6d3c6}
 html[data-theme="light"] .topbar .bg-slate-800{background-color:rgba(255,255,255,.14);color:#faf9f5}
+html[data-theme="light"] .border-slate-600{border-color:#b0aea5}
