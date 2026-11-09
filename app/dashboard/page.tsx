@@ -49,7 +49,7 @@ function Dashboard() {
   const [month, setMonth] = useState(() => ym(new Date().toISOString()));
   const [from, setFrom] = useState(''); const [to, setTo] = useState('');
 
-  useEffect(() => { (async () => setAllD(await pageAll<DeliveryFull>((a, b) => supabase.from('deliveries').select(DSEL).order('made_at').range(a, b))))(); }, [deliveries]);
+  useEffect(() => { (async () => setAllD(await pageAll<DeliveryFull>((a, b) => supabase.from('deliveries').select(DSEL).order('made_at').range(a, b))))(); }, [(deliveries[0]?.id ?? '') + ':' + deliveries.length + ':' + deliveries.filter(d => d.status === 'RECEIVED').length]);
 
   const inRange = (x: string) => (!from || dayStr(x) >= from) && (!to || dayStr(x) <= to);
 
@@ -90,7 +90,7 @@ function Dashboard() {
     let q = supabase.from('lathe_activity_logs').select('*').gte('ended_at', rs.toISOString()).lt('ended_at', re.toISOString());
     if (fsel) q = q.eq('factory_id', fsel);
     setLogs(await pageAll<LatheLog>((a, b) => q.order('ended_at', { ascending: false }).range(a, b)));
-  })(); }, [rs.getTime(), re.getTime(), fsel, orders]);
+    })(); }, [rs.getTime(), re.getTime(), fsel, orders.length + ':' + orders.filter(o => o.status === 'ON_LATHE').length + ':' + deliveries.length]);
   const secsOf = (f: string) => logs.filter(l => l.factory_id === f).reduce((a, l) => a + l.duration_seconds, 0);
   const totalSecs = logs.reduce((a, l) => a + l.duration_seconds, 0);
   const dper = allD.filter(d => +new Date(d.made_at) >= +rs && +new Date(d.made_at) < +re);

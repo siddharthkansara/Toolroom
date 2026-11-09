@@ -15,12 +15,14 @@ export function useOrders() {
     if (o.data) setOrders(o.data as unknown as OrderFull[]);
     if (d.data) setDeliveries(d.data as unknown as DeliveryFull[]);
   }, []);
-  useEffect(() => {
+    useEffect(() => {
     load();
+    let t: ReturnType<typeof setTimeout> | undefined;
+    const later = () => { if (t) clearTimeout(t); t = setTimeout(load, 800); };   // one reload after a burst of changes
     const ch = supabase.channel('orders-' + Math.random())
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'tool_orders' }, load)
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'deliveries' }, load).subscribe();
-    return () => { supabase.removeChannel(ch); };
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'tool_orders' }, later)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'deliveries' }, later).subscribe();
+    return () => { if (t) clearTimeout(t); supabase.removeChannel(ch); };
   }, [load]);
   return { orders, deliveries, reload: load };
 }

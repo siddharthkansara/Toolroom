@@ -1,9 +1,10 @@
 'use client';
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { supabase, rpc } from '@/lib/supabase';
 import { uuid } from '@/lib/useOrders';
 import { rollerLabel, mname, FACTORIES } from '@/lib/factories';
 import { TOOL_LABEL, type RollerMaster, type InventoryStock, type InventoryLocation, type InventoryMove, type InventoryTakedown, type InventoryRequest, type HeaderMachine, type ToolType, type ToolingMaster } from '@/types/database';
+import { useVisibleInterval } from '@/lib/useVisibleInterval';
 
 const inp = 'h-14 rounded-xl bg-slate-900 border-2 border-slate-700 px-3 text-xl w-full';
 const lbl = 'block text-sm font-semibold text-slate-300 mb-1';
@@ -328,7 +329,8 @@ export function InventoryTab({ factory, startView }: { factory: string; startVie
   const [goLive, setGoLive] = useState(''); const [q, setQ] = useState(''); const [open, setOpen] = useState<Record<string, boolean>>({});
   const [view, setView] = useState<View>('stock'); const [op, setOp] = useState<{ k: string; t: 'move' | 'harden' | 'out' } | null>(null); const [msg, setMsg] = useState('');
     const [heads, setHeads] = useState<HeaderMachine[]>([]); const [dimMap, setDimMap] = useState<Record<string, string>>({});
-  const [lastRun, setLastRun] = useState<Record<string, InventoryTakedown>>({});
+      const dimsLoaded = useRef('');
+    const [lastRun, setLastRun] = useState<Record<string, InventoryTakedown>>({});
   const [reqs, setReqs] = useState<InventoryRequest[]>([]);
   const [origin, setOrigin] = useState<Record<string, { kind: string; reason: string | null; created_at: string }>>({});
   const load = useCallback(async () => {
@@ -351,12 +353,15 @@ export function InventoryTab({ factory, startView }: { factory: string; startVie
     const og: Record<string, { kind: string; reason: string | null; created_at: string }> = {};
     ((om.data ?? []) as unknown as { roller_id: string; tool_type: string; state: string; kind: string; reason: string | null; created_at: string }[]).forEach(x => { const k = `${x.roller_id}|${x.tool_type}|${x.state}`; if (!og[k]) og[k] = x; });
     setOrigin(og); setHeads((hm.data ?? []) as unknown as HeaderMachine[]);
-        const tm: ToolingMaster[] = []; for (let i = 0; i < 20000; i += 1000) { const t = await supabase.from('tooling_master').select('*').range(i, i + 999); const d = (t.data ?? []) as unknown as ToolingMaster[]; tm.push(...d); if (d.length < 1000) break; }
+        if (dimsLoaded.current !== factory) {   // tool dimensions rarely change: fetch once per factory, not every minute    
+    const tm: ToolingMaster[] = []; for (let i = 0; i < 20000; i += 1000) { const t = await supabase.from('tooling_master').select('*').range(i, i + 999); const d = (t.data ?? []) as unknown as ToolingMaster[]; tm.push(...d); if (d.length < 1000) break; }
     const dm: Record<string, string[]> = {}; tm.forEach(k => { const x = detOf(k); if (x) { const kk = `${k.roller_id}|${k.tool_type}`; if (!(dm[kk] ??= []).includes(x)) dm[kk].push(x); } });
     setDimMap(Object.fromEntries(Object.entries(dm).map(([k, v]) => [k, v.join(' / ')])));
+          dimsLoaded.current = factory; }
   }, [factory]);
   useEffect(() => { setView(startView ?? 'stock'); setOp(null); setMsg(''); load(); }, [load, startView]);
-  useEffect(() => { const t = setInterval(load, 60000); return () => clearInterval(t); }, [load]);   // picks up tools the plant has just received
+  /* useEffect(() => { const t = setInterval(load, 60000); return () => clearInterval(t); }, [load]);   // picks up tools the plant has just received */
+    useVisibleInterval(load, 60000);   // picks up tools the plant has just received
   useEffect(() => { if (!msg) return; const t = setTimeout(() => setMsg(''), 5000); return () => clearTimeout(t); }, [msg]);   // messages fade away
   const go = (v: View) => { setView(v); setOp(null); setMsg(''); };
   const done = () => { setOp(null); load(); };

@@ -4,6 +4,7 @@ import { supabase } from '@/lib/supabase';
 import { istDate, needsAction } from '@/lib/inventory';
 import { TOOL_LABEL, type InventoryRequest, type ToolType } from '@/types/database';
 import { FACTORIES, FCHIP } from '@/lib/factories';
+import { useVisibleInterval } from '@/lib/useVisibleInterval';
 
 const MORNING_REMINDER = true;     // false = no night-shift reminder
 const OFF_DAYS: number[] = [];     // days with no reminder, 0 = Sunday ... for example [0]
@@ -22,10 +23,17 @@ export function StockReminder({ factory, onOpen }: { factory: string; onOpen: ()
     const rows = (s.data ?? []) as unknown as { work_date: string; shift: string }[];
     setInfo({ used: !!(u.data && u.data.length), dayDone: rows.some(x => x.work_date === today && x.shift === 'DAY'), nightDone: rows.some(x => x.work_date === yest && x.shift === 'NIGHT') });
   }, [factory]);
-  useEffect(() => {
+  /* useEffect(() => {
     load(); const t = setInterval(() => { load(); setTick(n => n + 1); }, 60000); const h = () => load();
     window.addEventListener('stock-check', h); return () => { clearInterval(t); window.removeEventListener('stock-check', h); };
+  }, [load]); */
+
+    useEffect(() => {
+    load(); const h = () => load();
+    window.addEventListener('stock-check', h); return () => window.removeEventListener('stock-check', h);
   }, [load]);
+  useVisibleInterval(() => { load(); setTick(n => n + 1); }, 60000);
+
   const now = new Date(Date.now() + 330 * 60000); const hr = now.getUTCHours() + now.getUTCMinutes() / 60;
   if (!info.used || OFF_DAYS.includes(now.getUTCDay())) return null;
   let kind = '';
@@ -73,7 +81,9 @@ export function RequestBanner({ factory, onOpen }: { factory: string; onOpen: ()
     const { data } = await supabase.from('inventory_requests').select('*').or(`source_factory.eq.${factory},requester_factory.eq.${factory}`).in('status', ['REQUESTED', 'APPROVED', 'IN_TRANSIT']);
     setReqs((data ?? []) as unknown as InventoryRequest[]);
   }, [factory]);
-  useEffect(() => { load(); const t = setInterval(load, 60000); return () => clearInterval(t); }, [load]);
+  /* useEffect(() => { load(); const t = setInterval(load, 60000); return () => clearInterval(t); }, [load]); */
+    useEffect(() => { load(); }, [load]);
+  useVisibleInterval(load, 60000);
   const needs = reqs.filter(x => needsAction(x, factory)); if (!needs.length) return null;
   const arriving = needs.find(x => x.requester_factory === factory && x.status === 'IN_TRANSIT');
   const more = needs.length > 1 ? ` · ${needs.length - 1} more` : '';
