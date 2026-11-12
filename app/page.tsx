@@ -7,8 +7,10 @@ import { FACTORIES, mname as mcode, machineId, rollerLabel } from '@/lib/factori
 import { URGENCY } from '@/lib/urgency';
 import { groupByRoller, RollerAccordion } from '@/lib/rollerGroups';
 import { useOrders, chime, dt, SEL, gkey, uuid } from '@/lib/useOrders';
-import { TOOL_LABEL, type HeaderMachine, type ProductionRun, type RollerMaster, type ToolingMaster, type ToolType, type Priority, type OrderFull, type DeliveryFull, type Delivery } from '@/types/database';
+import { TOOL_LABEL, type HeaderMachine, type ProductionRun, type RollerMaster, type ToolingMaster, type ToolType, type Priority, type OrderFull, type DeliveryFull, type Delivery, type CheckItem } from '@/types/database';
 import { InventoryTab } from '@/lib/inventory';
+import { checkDone, orderTool } from '@/lib/dimCheck';
+import { CheckLines } from '@/lib/checkView';
 import { StockReminder, RequestBanner } from '@/lib/stockReminder';
 import { ShiftSheet } from '@/lib/shiftSheet';
 import { ToolPlanner } from '@/lib/planner';
@@ -34,8 +36,8 @@ const big = 'rounded-2xl border-2 text-2xl font-bold p-4 transition-colors';
 const on = 'border-amber-400 bg-amber-400/20', off = 'border-slate-700 bg-slate-900';
 const inp = 'h-14 rounded-xl bg-slate-900 border-2 border-slate-700 px-3 text-xl w-full';
 const Lbl = ({ t, children }: { t: string; children: React.ReactNode }) => (<label className="block"><span className="block text-sm font-semibold text-slate-300 mb-1">{t}</span>{children}</label>);
-const tname = (o: OrderFull) => (o.tooling ? `${TOOL_LABEL[o.tooling.tool_type]} ${o.tooling.batta_code ?? ''}` : o.custom_tool_name || 'Other tool');
-const dims = (o: OrderFull) => (o.tooling ? det(o.tooling) : o.custom_dimensions ?? '');
+const tname = (o: OrderFull) => (o.tooling ? `${TOOL_LABEL[o.tooling.tool_type]} ${o.batta_code ?? ''}` : o.custom_tool_name || 'Other tool');
+const dims = (o: OrderFull) => { const k = orderTool(o); return k ? det(k) : o.custom_dimensions ?? ''; };
 const stOf = (o: OrderFull) => o.status === 'CLOSED' ? ((o.qty_made ?? 0) >= o.quantity ? 'Completed' : `Closed (${o.qty_made ?? 0} of ${o.quantity})`)
   : o.status === 'QUEUED' && (o.qty_made ?? 0) > 0 ? 'Partly made' : ST[o.status];
 const det = (k: ToolingMaster) => k.tool_type === 'DIE_TOP' ? (k.batta_code ? `Batta ${k.batta_code}` : '')
@@ -71,6 +73,7 @@ function Kiosk() {
   const [busy, setBusy] = useState(false);
   const [adding, setAdding] = useState(false); const [mname, setMname] = useState('');
   const [sq, setSq] = useState(''); const [year, setYear] = useState<OrderFull[]>([]); const [open, setOpen] = useState<string | null>(null); const [view, setView] = useState<string | null>(null); const [openG, setOpenG] = useState<Record<string, boolean>>({}); const [recv, setRecv] = useState<{ id: string; qty: number } | null>(null);
+    const [rchk, setRchk] = useState<{ items: CheckItem[]; match: boolean | null; note: string }>({ items: [], match: null, note: '' });
   const { role, factory: myFactory } = useAuth();
   const [ofac, setOfac] = useState<string>('NIC');   // owner can switch factory; toolroom users are fixed to theirs
   const factory = role === 'owner' ? ofac : myFactory ?? '';
@@ -213,9 +216,16 @@ const periodLabel = per === 'y' ? `FY ${fy}-${String(fy + 1).slice(2)}` : per ==
     chime(); setSent(true); load();
     setTimeout(() => { setSent(false); reset(); setView(gid); }, 1800);
   }
+    const startReceive = (d: DeliveryFull) => {   // open the receive box; the checklist copies the lines the CNC checked
+    setRecv({ id: d.id, qty: d.qty_made });
+    setRchk({ items: (d.cnc_check?.items ?? []).map(i => ({ ...i, v: '' })), match: null, note: '' });
+  };
+    const chkOk = rchk.items.length > 0 && checkDone(rchk.items) && rchk.match !== null && (rchk.match || rchk.note.trim() !== '');
   async function confirmReceived() {   // plant confirms the quantity received for one batch
     if (!recv) return;
-    const { error } = await rpc('receive_delivery', { p_delivery: recv.id, p_qty: recv.qty });
+        if (!chkOk) { alert('Measure and write each dimension, then choose Matches or Doesn\'t match (with a note) first'); return; }
+    const p_check = rchk.items.length ? { items: rchk.items.map(i => ({ ...i, v: i.v.trim() })), match: rchk.match, note: rchk.note.trim() || null } : null;
+    const { error } = await rpc('receive_delivery', { p_delivery: recv.id, p_qty: recv.qty, p_check });
     if (error) alert('Could not save: ' + error.message);
     setRecv(null); reload();
   }
@@ -250,6 +260,7 @@ const periodLabel = per === 'y' ? `FY ${fy}-${String(fy + 1).slice(2)}` : per ==
     <div className="text-sm text-slate-400">Header {mcode(o.machine_id)} · order {o.quantity}, made so far {o.qty_made ?? 0}</div>
     <div className="text-xs text-slate-500">{st === 'READY' ? 'Made' : 'Received'} {dt(st === 'READY' ? d.made_at : d.received_at ?? d.made_at)}</div>
     {d.note && <div className="text-sm text-amber-400 mt-1">📝 CNC: {d.note}</div>}
+        <CheckLines d={d}/>
     {st === 'READY' && (recv?.id === d.id
       ? <div className="mt-2 rounded-lg bg-slate-800 p-3 text-center space-y-2">
           <div>How many did you receive? <span className="text-slate-400">(CNC sent {d.qty_made})</span></div>
@@ -257,9 +268,23 @@ const periodLabel = per === 'y' ? `FY ${fy}-${String(fy + 1).slice(2)}` : per ==
             <button aria-label="Less" onClick={() => setRecv({ id: d.id, qty: Math.max(0, recv.qty - 1) })} className="w-16 rounded-xl bg-slate-700"><Minus className="mx-auto"/></button>
             <span className="text-5xl font-bold w-20">{recv.qty}</span>
             <button aria-label="More" onClick={() => setRecv({ id: d.id, qty: recv.qty + 1 })} className="w-16 rounded-xl bg-slate-700"><Plus className="mx-auto"/></button></div>
-          <div className="flex gap-2"><button onClick={confirmReceived} className="flex-1 rounded-lg bg-green-600 font-bold">✔ Confirm received</button>
+                    {rchk.items.length > 0 ? <div className="rounded-lg bg-slate-900 p-3 text-left space-y-2">
+              <div className="font-bold text-amber-300">Check the dimensions yourself before it goes to stock</div>
+                            {rchk.items.map((l, n) => (
+                <div key={n} className="rounded-lg bg-slate-800 p-2 space-y-1">
+                  <div className="flex items-baseline justify-between gap-2 flex-wrap">
+                    <span className="font-bold text-lg">{l.k} <span className="text-sm font-normal text-slate-400">{l.spec ? `spec ${l.spec}` : 'no spec'}</span></span>
+                    <span className="text-sky-400">CNC wrote: <b>{d.cnc_check?.items[n]?.v || '—'}</b></span></div>
+                  <input aria-label={`${l.k} measured`} inputMode={/^[\d.]+$/.test(l.spec) ? 'decimal' : 'text'} className={inp} placeholder="you measured" value={l.v} onChange={e => setRchk({ ...rchk, items: rchk.items.map((x, i) => i === n ? { ...x, v: e.target.value } : x) })}/>
+                </div>))}
+              <div className="flex gap-2">
+                <button onClick={() => setRchk({ ...rchk, match: true })} className={`flex-1 h-12 rounded-lg font-bold ${rchk.match === true ? 'bg-green-600 text-white' : 'bg-slate-700'}`}>✔ Matches</button>
+                <button onClick={() => setRchk({ ...rchk, match: false })} className={`flex-1 h-12 rounded-lg font-bold ${rchk.match === false ? 'bg-red-700 text-white' : 'bg-slate-700'}`}>✖ Doesn't match</button></div>
+              {rchk.match === false && <input aria-label="Mismatch note" className={inp} placeholder="What is different? (required)" value={rchk.note} onChange={e => setRchk({ ...rchk, note: e.target.value })}/>}
+            </div> : <div className="text-sm text-red-400 font-semibold">This batch has no CNC dimension check, so it cannot be received. Tell the owner.</div>}
+          <div className="flex gap-2"><button onClick={confirmReceived} disabled={!chkOk} className="flex-1 rounded-lg bg-green-600 disabled:bg-slate-700 disabled:text-slate-400 font-bold">✔ Confirm received</button>
             <button onClick={() => setRecv(null)} className="px-4 rounded-lg bg-slate-700">Cancel</button></div></div>
-      : <button onClick={() => setRecv({ id: d.id, qty: d.qty_made })} className="mt-2 w-full rounded-lg bg-green-600 font-bold">✔ Received in plant</button>)}</div>); };
+      : <button onClick={() => startReceive(d)} className="mt-2 w-full rounded-lg bg-green-600 font-bold">✔ Received in plant</button>)}</div>); };
   return (<div className="p-4 max-w-7xl mx-auto">
     <header className="flex items-center justify-between mb-4">
       <div className="flex items-center gap-2 flex-wrap"><h1 className="text-xl text-slate-400">Toolroom ·</h1>
@@ -412,7 +437,7 @@ const periodLabel = per === 'y' ? `FY ${fy}-${String(fy + 1).slice(2)}` : per ==
                         {o.status === 'QUEUED' && (o.qty_made ?? 0) > 0 && <button onClick={() => closeRest(o)} className="px-4 rounded-xl bg-amber-700 min-h-12">Close remaining</button>}</div>
           {o.status === 'QUEUED' && raiseBtns([o.id], o.priority, 'min-h-12')}
           {deliveries.filter(d => d.order_id === o.id).sort((a, b) => +new Date(a.made_at) - +new Date(b.made_at)).map((d, i) =>
-            <div key={d.id} className="text-sm text-slate-300 mt-1">Batch {i + 1}: made {d.qty_made} · {dt(d.made_at)} · {d.status === 'RECEIVED' ? `received ${d.qty_received}` : 'at CNC, not received yet'}{d.note ? ` · 📝 ${d.note}` : ''}</div>)}</div>)}</div>
+            <div key={d.id} className="text-sm text-slate-300 mt-1">Batch {i + 1}: made {d.qty_made} · {dt(d.made_at)} · {d.status === 'RECEIVED' ? `received ${d.qty_received}` : 'at CNC, not received yet'}{d.note ? ` · 📝 ${d.note}` : ''}<CheckLines d={d}/></div>)}</div>)}</div>
                 {(() => { const w = viewItems.filter(o => o.status === 'QUEUED'); return w.length > 1 ? raiseBtns(w.map(o => o.id), w.some(o => o.priority === 'BUFFER_NEXT_SHIFT') ? 'BUFFER_NEXT_SHIFT' : w.some(o => o.priority === 'URGENT') ? 'URGENT' : 'URGENT_MACHINE_DOWN', 'min-h-14', ' (whole order)') : null; })()}
         {queued.length > 1 && <button onClick={() => del(queued.map(o => o.id))} className="mt-3 w-full rounded-xl bg-red-900 min-h-14 text-lg">🗑 Delete all waiting tools in this order</button>}
         <p className="text-xs text-slate-500 mt-3">Only tools still waiting in the queue can be deleted. Once a tool is on the lathe, ask the CNC operator to stop the job.</p>

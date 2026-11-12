@@ -12,10 +12,12 @@ import { ToolPlanner } from '@/lib/planner';
 import { TodayView } from '@/lib/dashToday';
 import { LatheView } from '@/lib/latheView';
 import { ProductionView } from '@/lib/productionView';
+import { CheckSummary } from '@/lib/checkView';
+import { checkText, checkResult, checkNote } from '@/lib/dimCheck';
 
 const fd = (d: string | null) => (d ? new Date(d).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata', dateStyle: 'medium', timeStyle: 'short' }) : '');
 const kind = (o: OrderFull) => (o.tooling ? TOOL_LABEL[o.tooling.tool_type] : o.custom_tool_name || 'Other tool');
-const tname = (o: OrderFull) => (o.tooling ? `${TOOL_LABEL[o.tooling.tool_type]} ${o.tooling.batta_code ?? ''}`.trim() : o.custom_tool_name || 'Other tool');
+const tname = (o: OrderFull) => (o.tooling ? `${TOOL_LABEL[o.tooling.tool_type]} ${o.batta_code ?? ''}`.trim() : o.custom_tool_name || 'Other tool');
 const pad = (n: number) => String(n).padStart(2, '0');
 const ym = (x: string) => { const d = new Date(x); return `${d.getFullYear()}-${pad(d.getMonth() + 1)}`; };
 const dayStr = (x: string) => { const d = new Date(x); return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`; };
@@ -62,9 +64,10 @@ function Dashboard() {
       const best = lg.filter(l => l.order_id === d.order_id).map(l => ({ l, gap: Math.abs(+new Date(l.ended_at) - t) })).filter(x => x.gap < 60000).sort((a, b) => a.gap - b.gap)[0];
       return best ? hms(best.l.duration_seconds) : ''; };
     const rows = all.filter(d => d.ord && inRange(d.made_at)).map(d => { const o = d.ord!;
-      return [d.factory_id, rollerLabel(o.factory_id, o.roller?.roller_size ?? ''), o.roller?.roller_size, o.roller?.customer_drg, o.roller?.party_name, mcode(o.machine_id), kind(o), o.tooling?.batta_code, o.slip_no,
-        o.quantity, d.qty_made, fd(d.made_at), runtimeOf(d), d.qty_received, fd(d.received_at), d.status === 'RECEIVED' ? 'Received' : 'At CNC, not received yet', d.note, o.notes]; });
-    download(['Factory', 'Factory - Roller Size', 'Roller Size', 'Drawing No', 'Party', 'Header Machine', 'Tool', 'Batta No', 'Slip No', 'Qty Ordered', 'Qty Made (this batch)', 'Made At', 'Lathe Runtime (h:mm:ss)', 'Qty Received', 'Received At', 'Receipt Status', 'CNC Note', 'Toolroom Note'],
+      return [d.factory_id, rollerLabel(o.factory_id, o.roller?.roller_size ?? ''), o.roller?.roller_size, o.roller?.customer_drg, o.roller?.party_name, mcode(o.machine_id), kind(o), o.batta_code, o.slip_no,
+        o.quantity, d.qty_made, fd(d.made_at), runtimeOf(d), d.qty_received, fd(d.received_at), d.status === 'RECEIVED' ? 'Received' : 'At CNC, not received yet', d.note, o.notes,
+        checkText(d.cnc_check), checkText(d.plant_check), checkResult(d.plant_check), d.plant_check?.note]; });
+    download(['Factory', 'Factory - Roller Size', 'Roller Size', 'Drawing No', 'Party', 'Header Machine', 'Tool', 'Batta No', 'Slip No', 'Qty Ordered', 'Qty Made (this batch)', 'Made At', 'Lathe Runtime (h:mm:ss)', 'Qty Received', 'Received At', 'Receipt Status', 'CNC Note', 'Toolroom Note', 'CNC Dimension Check', 'Plant Dimension Check', 'Plant Check Result', 'Plant Check Note'],
       rows, `toolings-completed-${f ?? 'ALL'}-${new Date().toISOString().slice(0, 10)}.csv`);
   }
   async function exportOrders(f: string | null) {   // every order, including pending ones, with all its batches
@@ -73,10 +76,10 @@ function Dashboard() {
     const [all, dl] = await Promise.all([pageAll<OrderFull>((a, b) => qo.order('created_at').range(a, b)), pageAll<Delivery>((a, b) => qd.order('made_at').range(a, b))]);
     const by: Record<string, Delivery[]> = {}; dl.forEach(d => (by[d.order_id] ??= []).push(d));
     const rows = all.filter(o => inRange(o.created_at)).map(o => { const b = by[o.id] ?? [];
-      return [o.factory_id, rollerLabel(o.factory_id, o.roller?.roller_size ?? ''), o.slip_no, fd(o.created_at), mcode(o.machine_id), o.roller?.customer_drg, o.roller?.party_name, kind(o), o.tooling?.batta_code,
-        o.tooling?.od_dim, o.tooling?.length_dim, o.tooling?.od2_dim, o.tooling?.step_depth_dim, o.custom_dimensions, URGENCY_LABEL[o.priority] ?? o.priority, o.roller_qty, o.quantity, o.qty_made ?? 0, o.quantity - (o.qty_made ?? 0),
+      return [o.factory_id, rollerLabel(o.factory_id, o.roller?.roller_size ?? ''), o.slip_no, fd(o.created_at), mcode(o.machine_id), o.roller?.customer_drg, o.roller?.party_name, kind(o), o.batta_code,
+        o.od_dim, o.length_dim, o.od2_dim, o.step_depth_dim, o.custom_dimensions, URGENCY_LABEL[o.priority] ?? o.priority, o.roller_qty, o.quantity, o.qty_made ?? 0, o.quantity - (o.qty_made ?? 0),
         o.qty_received ?? 0, (o.qty_made ?? 0) - (o.qty_received ?? 0), stText(o), fd(o.closed_at), b.length,
-        b.map(d => `${d.qty_made} made ${fd(d.made_at)} -> ${d.status === 'RECEIVED' ? `${d.qty_received} received ${fd(d.received_at)}` : 'not received yet'}${d.note ? ` [CNC note: ${d.note}]` : ''}`).join(' | '), o.notes]; });
+        b.map(d => `${d.qty_made} made ${fd(d.made_at)} -> ${d.status === 'RECEIVED' ? `${d.qty_received} received ${fd(d.received_at)}` : 'not received yet'}${d.note ? ` [CNC note: ${d.note}]` : ''}${checkNote(d)}`).join(' | '), o.notes]; });
     download(['Factory', 'Factory - Roller Size', 'Slip No', 'Ordered At', 'Header Machine', 'Drawing No', 'Party', 'Tool', 'Batta No', 'OD', 'Length', 'OD 2', 'Step', 'Custom Tool Dims', 'Urgency', 'Rollers To Forge',
       'Qty Ordered', 'Qty Made', 'Short (ordered-made)', 'Qty Received', 'Missing in transit (made-received)', 'Status', 'Closed At', 'Number of Batches', 'Batches', 'Toolroom Note'], rows, `tool-orders-${f ?? 'ALL'}-${new Date().toISOString().slice(0, 10)}.csv`);
   }
@@ -94,6 +97,7 @@ function Dashboard() {
   const secsOf = (f: string) => logs.filter(l => l.factory_id === f).reduce((a, l) => a + l.duration_seconds, 0);
   const totalSecs = logs.reduce((a, l) => a + l.duration_seconds, 0);
   const dper = allD.filter(d => +new Date(d.made_at) >= +rs && +new Date(d.made_at) < +re);
+    const dByOrder: Record<string, DeliveryFull[]> = {}; allD.forEach(d => (dByOrder[d.order_id] = dByOrder[d.order_id] || []).push(d));
  
   const open = (o: OrderFull) => o.status === 'QUEUED' || o.status === 'ON_LATHE';
   const rowFor = (f: string | null) => { const fo = orders.filter(o => !f || o.factory_id === f); const fa = allD.filter(d => !f || d.factory_id === f); const dp = dper.filter(d => !f || d.factory_id === f);
@@ -232,8 +236,8 @@ function Dashboard() {
         <div className="text-lg font-bold">{rollerLabel(list[0].factory_id, list[0].roller?.roller_size ?? '—')} <span className="text-slate-400 font-normal">Drg {list[0].roller?.customer_drg ?? '—'} · ordered {list.reduce((a, o) => a + o.quantity, 0)} · made {list.reduce((a, o) => a + (o.qty_made ?? 0), 0)} · received {list.reduce((a, o) => a + (o.qty_received ?? 0), 0)}</span></div>
         <table className="w-full mt-2 text-sm"><tbody>{[...list].sort((a, b) => +new Date(a.created_at) - +new Date(b.created_at)).map(o => <tr key={o.id} className="border-t border-slate-800">
           <td className="py-1">{dt(o.created_at)}</td><td>{mcode(o.machine_id)}</td><td>{tname(o)}</td><td className="text-right">{o.quantity}</td>
-          <td className="text-right text-green-400">{o.qty_made ?? '—'}</td><td className="text-right text-sky-400">{o.qty_received ?? '—'}</td><td className="text-right text-slate-400">{stText(o)}</td></tr>)}</tbody></table></div>)}</div>
-      <p className="text-xs text-slate-500 mt-2">Columns: requested, header, tool, ordered, made, received, status.</p></section>
+          <td className="text-right text-green-400">{o.qty_made ?? '—'}</td><td className="text-right text-sky-400">{o.qty_received ?? '—'}</td><td className="text-right text-slate-400">{stText(o)}</td><td className="text-right pl-2 whitespace-nowrap"><CheckSummary ds={dByOrder[o.id] ?? []}/></td></tr>)}</tbody></table></div>)}</div>
+      <p className="text-xs text-slate-500 mt-2">Columns: requested, header, tool, ordered, made, received, status, checks (📏 batches with a CNC check / total; ⚠ = plant says not matching).</p></section>
   </div>);
 }
 

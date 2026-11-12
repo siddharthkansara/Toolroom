@@ -5,11 +5,13 @@ import { Guard } from '@/lib/auth';
 import { useOrders, dt, gkey, DSEL, chime } from '@/lib/useOrders';
 import { FACTORIES, FCHIP, mname as mcode, rollerLabel } from '@/lib/factories';
 import { URGENCY, cmpQueue } from '@/lib/urgency';
-import { TOOL_LABEL, type OrderFull, type DeliveryFull } from '@/types/database';
+import { TOOL_LABEL, type OrderFull, type DeliveryFull, type CheckItem } from '@/types/database';
 import { CncHistory } from '@/lib/cncHistory';
+import { CheckLines } from '@/lib/checkView';
+import { blankCheck, checkDone, orderTool, itemBad } from '@/lib/dimCheck';
 
 const nm = (o: OrderFull) => (o.tooling ? TOOL_LABEL[o.tooling.tool_type] : o.custom_tool_name || 'Other tool');
-const det = (o: OrderFull) => { const k = o.tooling; if (!k) return o.custom_dimensions ?? '';
+const det = (o: OrderFull) => { const k = orderTool(o); if (!k) return o.custom_dimensions ?? '';
   return k.tool_type === 'DIE_TOP' ? (k.batta_code ? `Batta ${k.batta_code}` : '')
     : k.tool_type === 'BOTTOM' ? `OD ${k.od_dim ?? '—'} × L ${k.length_dim ?? '—'} · OD ${k.od2_dim ?? '—'} · Step ${k.step_depth_dim ?? '—'}`
     : k.tool_type === 'FACING_PUNCH' ? `OD ${k.od_dim ?? '—'} × L ${k.length_dim ?? '—'}` : ''; };
@@ -37,7 +39,7 @@ function Cnc() {
   const [fsel, setFsel] = useState<string | null>(null);
   const [win, setWin] = useState<'today' | 'week' | 'month'>('month');
   const [showProg, setShowProg] = useState(false);
-  const [done, setDone] = useState<{ id: string; qty: number } | null>(null); const [doneNote, setDoneNote] = useState('');
+  const [done, setDone] = useState<{ id: string; qty: number } | null>(null); const [doneNote, setDoneNote] = useState(''); const [doneCheck, setDoneCheck] = useState<CheckItem[]>([]);
   const [openB, setOpenB] = useState<Record<string, boolean>>({});
 
 
@@ -100,8 +102,9 @@ function Cnc() {
   }
   async function finish() {   // Completed / Made: records this batch; anything not made stays in the queue
     if (!done) return;
+        if (!checkDone(doneCheck)) { alert('Write down the measured dimensions first'); return; }
     const o = orders.find(x => x.id === done.id);   // complete_batch clears started_lathe_at, so capture it first
-    const { error } = await rpc('complete_batch', { p_order: done.id, p_qty: done.qty, p_note: doneNote.trim() || null });
+    const { error } = await rpc('complete_batch', { p_order: done.id, p_qty: done.qty, p_note: doneNote.trim() || null, p_check: { items: doneCheck.map(i => ({ ...i, v: i.v.trim() })) } });
     if (error) { alert('Could not save: ' + error.message); return; }
     await logRun(o, 'COMPLETED', done.qty);
     setDone(null); reload();
@@ -138,7 +141,8 @@ function Cnc() {
       <span className="font-bold text-amber-300">{nm(d.ord!)}</span>
       <span>Batch <b className="text-xl">{d.qty_made}</b> <span className="text-slate-400">(order {d.ord!.quantity}, made so far {d.ord!.qty_made ?? 0})</span></span>
       <span className="text-sm text-slate-400">{dt(d.made_at)} · {d.status === 'READY' ? '📦 still at CNC' : `✔ at plant (${d.qty_received ?? '?'} received)`}</span>
-      {d.note && <span className="w-full text-sm text-amber-300">📝 {d.note}</span>}</div>)}</div></div>); };
+      {d.note && <span className="w-full text-sm text-amber-300">📝 {d.note}</span>}
+      <CheckLines d={d}/></div>)}</div></div>); };
   const fcols = (list: DeliveryFull[]) => (<div className={`grid gap-4 ${facs.length > 1 ? 'lg:grid-cols-3' : ''}`}>{facs.map(f => { const l = list.filter(d => d.factory_id === f);
     const g = groupBy(l, d => gkey(d.ord!)).sort((a, b) => +new Date(b[1][0].made_at) - +new Date(a[1][0].made_at));
     return <div key={f} className="space-y-3"><div className="flex items-center justify-between"><FTag f={f} big/><span className="text-slate-400">{l.reduce((a, d) => a + d.qty_made, 0)} pcs</span></div>
@@ -179,7 +183,7 @@ function Cnc() {
             <div className="text-sm text-slate-400">Ordered {o.quantity}{(o.qty_made ?? 0) > 0 ? ` · already made ${o.qty_made}` : ''} · requested {when(o.created_at)}{o.started_lathe_at ? ` · in progress since ${dt(o.started_lathe_at)}` : ''}</div></div>
             <div className="flex gap-2 h-fit"><FTag f={o.factory_id}/><span className={`${U.chip} rounded-lg px-3 py-0.5 font-bold`}>{U.short}</span><span className="bg-blue-600 text-white rounded-lg px-3 py-0.5 font-bold">IN PROGRESS</span></div></div>
           {!d ? <div className="grid grid-cols-2 gap-3 mt-4">
-              <button onClick={() => { setDoneNote(''); setDone({ id: o.id, qty: Math.max(1, rem(o)) }); }} className="h-20 rounded-2xl bg-green-600 text-xl font-extrabold">✔ COMPLETED / MADE</button>
+              <button onClick={() => { setDoneNote(''); setDoneCheck(blankCheck(o)); setDone({ id: o.id, qty: Math.max(1, rem(o)) }); }} className="h-20 rounded-2xl bg-green-600 text-xl font-extrabold">✔ COMPLETED / MADE</button>
               <button onClick={() => stop(o.id)} className="h-20 rounded-2xl bg-slate-600 text-xl font-extrabold">✖ STOP</button></div>
             : <div className="mt-4 rounded-2xl bg-slate-800 p-4 text-center space-y-3">
               <div className="text-xl">How many did you make in this batch? <span className="text-slate-400">({rem(o)} still owed)</span></div>
@@ -187,10 +191,19 @@ function Cnc() {
                 <button onClick={() => setDone({ id: o.id, qty: Math.max(1, d.qty - 1) })} className="w-24 h-20 rounded-xl bg-slate-700 text-4xl font-bold">−</button>
                 <span className="text-7xl font-extrabold w-40">{d.qty}</span>
                 <button onClick={() => setDone({ id: o.id, qty: d.qty + 1 })} className="w-24 h-20 rounded-xl bg-slate-700 text-4xl font-bold">+</button></div>
+                            <div className="rounded-xl bg-slate-900 p-3 text-left space-y-2">
+                <div className="text-lg font-bold text-amber-300">Check the dimensions before dispatch — write what you measure</div>
+                {doneCheck.map((l, n) => (
+                  <label key={n} className="flex items-center gap-3">
+                    <span className="w-32 shrink-0"><span className="block font-bold">{l.k}</span><span className="block text-sm text-slate-400">{l.spec ? `spec ${l.spec}` : 'no spec on file'}</span></span>
+                    <input aria-label={l.k} inputMode={/^[\d.]+$/.test(l.spec) ? 'decimal' : 'text'} className="h-14 rounded-xl bg-slate-800 border-2 border-slate-700 px-3 text-xl w-full" placeholder="measured" value={l.v} onChange={e => setDoneCheck(doneCheck.map((x, i) => i === n ? { ...x, v: e.target.value } : x))}/>                    
+                    {itemBad(l) && <span className="text-red-400 text-sm shrink-0">numbers only</span>}
+                  </label>))}
+              </div>
               <label className="block text-left"><span className="block text-sm font-semibold text-slate-300 mb-1">Note for toolroom (optional)</span>
                 <input className="h-14 rounded-xl bg-slate-900 border-2 border-slate-700 px-3 text-lg w-full" placeholder="e.g. 3 pcs are 0.5 mm short" value={doneNote} onChange={e => setDoneNote(e.target.value)}/></label>
               <div className="text-sm text-slate-400">Anything not made stays in the queue. Only the toolroom can close the balance.</div>
-              <div className="flex gap-3"><button onClick={finish} className="flex-1 h-20 rounded-2xl bg-green-600 text-xl font-extrabold">✔ CONFIRM · READY TO DISPATCH</button>
+              <div className="flex gap-3"><button onClick={finish} disabled={!checkDone(doneCheck)} className="flex-1 h-20 rounded-2xl bg-green-600 disabled:bg-slate-700 disabled:text-slate-400 text-xl font-extrabold">✔ CONFIRM · READY TO DISPATCH</button>
                 <button onClick={() => setDone(null)} className="px-6 rounded-2xl bg-slate-700 text-lg">Cancel</button></div></div>}
         </div>; })()}
       <div className={`grid gap-4 ${facs.length > 1 ? 'lg:grid-cols-3' : ''}`}>{facs.map(column)}</div></>}

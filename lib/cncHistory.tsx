@@ -5,6 +5,8 @@ import { SEL, DSEL, dt, gkey } from '@/lib/useOrders';
 import { FACTORIES, FCHIP, mname, rollerLabel } from '@/lib/factories';
 import { URGENCY } from '@/lib/urgency';
 import { TOOL_LABEL, type OrderFull, type DeliveryFull } from '@/types/database';
+import { CheckLines, CheckBadge } from '@/lib/checkView';
+import { checkText, checkResult } from '@/lib/dimCheck';
 
 // CNC History, two views:
 //  Activity: one line per batch the operator confirmed (factory, roller size, tool, quantity, date and time).
@@ -105,8 +107,8 @@ export function CncHistory({ fsel, sig }: { fsel: string | null; sig: number }) 
       return { o, bs, made, toGo: o.status === 'CLOSED' ? 0 : Math.max(0, o.quantity - made), ...statusOf(o, made) }; });
     return { first: os[0] ?? (d.ord as OrderFull), rows, allDone: rows.length > 0 && rows.every(r => r.made >= r.o.quantity), madeTypes: rows.filter(r => r.made > 0).length };
   };
-  const activityCsv = () => saveCsv([['Date and time', 'Factory', 'Roller size', 'Tool', 'Quantity made', 'Status at plant'],
-    ...entries.map(d => [dt(d.made_at), d.factory_id, d.ord?.roller?.roller_size ?? '', d.ord ? nm(d.ord) : '', d.qty_made, d.status === 'READY' ? 'At CNC' : 'Received'])],
+  const activityCsv = () => saveCsv([['Date and time', 'Factory', 'Roller size', 'Tool', 'Quantity made', 'Status at plant', 'CNC dimension check', 'Plant check result', 'Plant check'],
+    ...entries.map(d => [dt(d.made_at), d.factory_id, d.ord?.roller?.roller_size ?? '', d.ord ? nm(d.ord) : '', d.qty_made, d.status === 'READY' ? 'At CNC' : 'Received', checkText(d.cnc_check), checkResult(d.plant_check), checkText(d.plant_check)])],
     `cnc-activity_${fromD}${toD === addDays(fromD, 1) ? '' : `-to-${addDays(toD, -1)}`}${fsel ? `_${fsel}` : ''}.csv`);
   const periodLabel = toD === addDays(fromD, 1) ? fromD : `${fromD} to ${addDays(toD, -1)}`;
 
@@ -150,18 +152,19 @@ export function CncHistory({ fsel, sig }: { fsel: string | null; sig: number }) 
           <span className="text-lg font-extrabold">{rollerLabel(d.factory_id, o.roller?.roller_size ?? '—')}</span>
           <span className="text-amber-300 font-bold">{nm(o)}</span>
           <span className="ml-auto text-2xl font-extrabold">{n0(d.qty_made)} <span className="text-sm font-normal text-slate-400">pcs</span></span>
-          <span className="text-slate-500">{isOpen ? '▲' : '▼'}</span></button>
+          <CheckBadge d={d}/><span className="text-slate-500">{isOpen ? '▲' : '▼'}</span></button>
         {isOpen && (() => { const g = groupOf(d); return (<div className="bg-slate-950/40 px-4 pb-4 pt-1 space-y-2">
           <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
             <span className="text-slate-300">Header {mname(g.first.machine_id)}</span><span className="text-slate-300">Ordered {dt(g.first.created_at)}</span>
             <span className={`ml-auto font-bold ${g.allDone ? 'text-green-400' : 'text-amber-300'}`}>{g.allDone ? '✔ Order complete' : `${g.madeTypes} of ${g.rows.length} tool type${g.rows.length === 1 ? '' : 's'} made`}</span></div>
+                    <CheckLines d={d}/>
           <div className="overflow-x-auto rounded-lg border border-slate-800"><table className="w-full text-left min-w-[760px]">
             <thead className="text-slate-400 text-xs"><tr>{['Tool', 'Priority', 'Ordered', 'Made so far', 'Still to make', 'Batches made', 'Status'].map(h => <th key={h} className={th}>{h}</th>)}</tr></thead>
             <tbody>{g.rows.map(r => { const U = URGENCY[r.o.priority]; return (<tr key={r.o.id} className={`border-t border-slate-800 text-sm ${r.o.id === d.order_id ? 'bg-amber-400/10' : ''}`}>
               <td className={`${td} font-bold text-amber-300`}>{nm(r.o)}</td>
               <td className={td}><span className={`${U.chip} rounded px-2 text-xs font-bold`}>{U.short}</span></td>
               <td className={td}>{r.o.quantity}</td><td className={`${td} font-bold`}>{r.made}</td><td className={td}>{r.toGo}</td>
-              <td className={td}>{r.bs.length ? r.bs.map(b => <div key={b.id} className="whitespace-nowrap">{b.qty_made} pcs · {dt(b.made_at)} · {b.status === 'READY' ? '📦 at CNC' : '✔ received'}</div>) : <span className="text-slate-500">none yet</span>}</td>
+              <td className={td}>{r.bs.length ? r.bs.map(b => <div key={b.id} className="whitespace-nowrap">{b.qty_made} pcs · {dt(b.made_at)} · {b.status === 'READY' ? '📦 at CNC' : '✔ received'}<CheckBadge d={b}/></div>) : <span className="text-slate-500">none yet</span>}</td>
               <td className={`${td} font-bold ${r.tone}`}>{r.label}</td></tr>); })}</tbody></table></div></div>); })()}
       </div>); })}</div>}
     </div>}
