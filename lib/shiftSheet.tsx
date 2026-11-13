@@ -5,7 +5,7 @@ import { rollerLabel, mname } from '@/lib/factories';
 import { ProductionTable, UtilGrid } from '@/lib/production';
 import { RollerRates } from '@/lib/rollerRates';
 import { ToolsUsed } from '@/lib/toolsUsed';
-import { TOOL_LABEL, type ToolType, type RollerMaster, type HeaderMachine, type HeaderOperator, type ShiftEntry, type ShiftTool, type ShiftSettings, type ShiftSheet as SheetRow } from '@/types/database';
+import { TOOL_LABEL, type ToolType,type InventoryStock, type RollerMaster, type HeaderMachine, type HeaderOperator, type ShiftEntry, type ShiftTool, type ShiftSettings, type ShiftSheet as SheetRow } from '@/types/database';
 import { SheetDownload } from '@/lib/sheetDownload';
 
 const inp = 'h-14 rounded-xl bg-slate-900 border-2 border-slate-700 px-3 text-xl w-full';
@@ -32,7 +32,10 @@ const FALLBACK: ShiftSettings = { id: 1, day_start: '07:30:00', day_deadline: '1
 const win = (date: string, shift: Shift, s: ShiftSettings) => shift === 'DAY' ? { starts: at(date, s.day_start), deadline: at(date, s.day_deadline) } : { starts: at(date, s.night_start), deadline: at(date, s.night_deadline, 1) };
 const fmt = (ms: number | string) => new Date(ms).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata', day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit' });
 
-type Init = { id?: string; roller?: string; operator?: string; tools?: Record<string, string>; note?: string; weight?: string; batch?: string; heat?: string; rate?: string };
+// A line can hold several rows for one tool (one per size): add them up for the count box, and keep the sizes as choices
+const sumTools = (rows: ShiftTool[] = []) => { const o: Record<string, number> = {}; rows.forEach(x => { o[x.tool_type] = (o[x.tool_type] ?? 0) + x.qty; }); return Object.fromEntries(Object.entries(o).map(([k, n]) => [k, String(n)])); };
+const picksOf = (rows: ShiftTool[] = []) => { const o: Record<string, Record<string, string>> = {}; rows.forEach(x => { (o[x.tool_type] ??= {})[x.dim_key] = String(x.qty); }); return o; };
+type Init = { id?: string; picks?: Record<string, Record<string, string>>; roller?: string; operator?: string; tools?: Record<string, string>; note?: string; weight?: string; batch?: string; heat?: string; rate?: string };
 
 // ---- One line: a header running one roller size ----
 function EntryForm({ factory, date, shift, machine, rolls, ops, init, onSaved, onCancel, setMsg, reloadOps, reloadRolls }: {
@@ -48,6 +51,18 @@ function EntryForm({ factory, date, shift, machine, rolls, ops, init, onSaved, o
   const chosen = rid && list.some(r => r.id === rid) ? rid : list.length === 1 ? list[0].id : '';
     const rate = chosen && init.rate && chosen === init.roller ? Number(init.rate) : chosen ? rates[chosen] : undefined;   // an edited line keeps the rate it was entered with
   const kg = parseFloat(wt.replace(/,/g, '')); const calc = rate && kg > 0 ? Math.round(kg * rate) : null;
+    const [stock, setStock] = useState<InventoryStock[]>([]); const [pk, setPk] = useState<Record<string, Record<string, string>>>(init.picks ?? {});
+  useEffect(() => { if (!chosen) { setStock([]); return; } supabase.from('inventory_stock').select('*').eq('factory_id', factory).eq('roller_id', chosen).then(({ data }) => setStock((data ?? []) as unknown as InventoryStock[])); }, [factory, chosen]);
+  // Sizes in stock for this roller and tool. An entry being edited gets back what it used, so that counts as available too.
+  const sizes = (k: string): [string, number][] => { const a: Record<string, number> = {}; stock.filter(x => x.tool_type === k).forEach(x => { a[x.dim_key] = (a[x.dim_key] ?? 0) + Number(x.qty); });
+    if (chosen === init.roller) Object.entries(init.picks?.[k] ?? {}).forEach(([d, q]) => { a[d] = (a[d] ?? 0) + num(q); });
+    return Object.entries(a).filter(([, n]) => n > 0).sort(([x], [y]) => x.localeCompare(y)); };
+  const ambiguous = (k: string) => num(t[k] ?? '') > 0 && sizes(k).length > 1;   // only ask when there is a real choice
+  const pv = (k: string, d: string) => pk[k]?.[d] ?? '';
+  const setPv = (k: string, d: string, v: string) => setPk({ ...pk, [k]: { ...(pk[k] ?? {}), [d]: v } });
+  const pickedSum = (k: string) => sizes(k).reduce((a, [d]) => a + num(pv(k, d)), 0);
+  const need = (k: string) => Math.min(num(t[k] ?? ''), sizes(k).reduce((a, [, n]) => a + n, 0));   // stock that cannot cover the count is recorded as short
+  
   const addSize = async () => {   // any roller size can be entered, even if no tools were ever ordered for it
     const name = newSize.trim();
     if (!name) { setMsg('Type the roller size.'); return; }
@@ -74,8 +89,16 @@ function EntryForm({ factory, date, shift, machine, rolls, ops, init, onSaved, o
     if (!heat.trim()) { setMsg('Enter the heat number.'); return; }
 
     const tools: Record<string, number> = {}; TOOLS.forEach(k => { const q = num(t[k] ?? ''); if (q > 0) tools[k] = q; });
+        for (const k of TOOLS) {
+      if (!ambiguous(k)) continue;
+      const over = sizes(k).find(([d, n]) => num(pv(k, d)) > n);
+      if (over) { setMsg(`Only ${over[1]} of that ${tn(k)} size in stock.`); return; }
+      if (pickedSum(k) !== need(k)) { setMsg(`Choose which size of ${tn(k)} was used. The numbers must add up to ${need(k)}.`); return; }
+    }
+    const picks: Record<string, { dim_key: string; qty: number }[]> = {};
+    TOOLS.forEach(k => { if (ambiguous(k)) picks[k] = sizes(k).map(([d]) => ({ dim_key: d, qty: num(pv(k, d)) })).filter(x => x.qty > 0); });
     setBusy(true);
-    const { data, error } = await rpcData<{ id: string; short: Record<string, number> }>('shift_entry_save', { p_id: init.id ?? null, p_factory: factory, p_date: date, p_shift: shift, p_machine: machine.id, p_status: 'RAN', p_roller: chosen, p_operator: op, p_rollers: null, p_tools: tools, p_note: note, p_weight: kg, p_batch: batch.trim(), p_heat: heat.trim() });
+    const { data, error } = await rpcData<{ id: string; short: Record<string, number> }>('shift_entry_save', { p_id: init.id ?? null, p_factory: factory, p_date: date, p_shift: shift, p_machine: machine.id, p_status: 'RAN', p_roller: chosen, p_operator: op, p_rollers: null, p_tools: tools, p_note: note, p_weight: kg, p_batch: batch.trim(), p_heat: heat.trim(), p_picks: picks });
     setBusy(false);
     if (error) { setMsg(`Could not save: ${error.message}`); return; }
     const short = Object.entries(data?.short ?? {});
@@ -102,6 +125,13 @@ function EntryForm({ factory, date, shift, machine, rolls, ops, init, onSaved, o
     {adding && <div className="flex gap-2 flex-wrap items-end"><label className="block flex-1 min-w-[12rem]"><span className={lbl}>New operator’s name</span><input className={inp} value={newOp} onChange={e => setNewOp(e.target.value)}/></label><button className={btn} onClick={addOp}>Add</button></div>}
     <div><div className="text-sm font-semibold text-slate-300 mb-1">Tools used (worn out)</div>
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">{TOOLS.map(k => <label key={k} className="block"><span className="block text-sm text-slate-300 mb-1">{tn(k)}</span><input inputMode="numeric" className={inp} value={t[k] ?? ''} onChange={e => setT({ ...t, [k]: e.target.value })}/></label>)}</div></div>
+        {TOOLS.filter(ambiguous).map(k => (<div key={k} className="rounded-xl bg-slate-900 p-3 space-y-2">
+      <div className="font-bold text-amber-300">Which size of {tn(k)} was used? <span className="font-normal text-slate-300">Chosen {pickedSum(k)} of {need(k)}</span></div>
+      {sizes(k).map(([d, n]) => (<div key={d} className="flex items-center gap-2 flex-wrap">
+        <span className="flex-1 min-w-[12rem]"><span className="block">{d || '(no size recorded)'}</span><span className="block text-sm text-slate-400">{n} in stock</span></span>
+        <button className={btn2} onClick={() => setPv(k, d, String(Math.max(0, Math.min(n, need(k) - (pickedSum(k) - num(pv(k, d)))))))}>All</button>
+        <input aria-label={`${tn(k)} ${d || 'size'} used`} inputMode="numeric" className={`${inp} !w-24`} value={pv(k, d)} onChange={e => setPv(k, d, e.target.value)}/></div>))}
+    </div>))}
     <label className="block"><span className={lbl}>Remarks (optional)</span><input className={inp} value={note} onChange={e => setNote(e.target.value)}/></label>
     <div className="flex gap-2 flex-wrap"><button className={btn} disabled={busy} onClick={save}>Save entry</button><button className={btn2} onClick={onCancel}>Cancel</button></div></div>);
 }
@@ -175,7 +205,7 @@ function EnterSheet({ factory, isOwner }: { factory: string; isOwner: boolean })
   };
   
   const openForm = (m: HeaderMachine, e?: ShiftEntry) => setForm({ machine: m.id, init: e
-  ? { id: e.id, roller: e.roller_id ?? undefined, operator: e.operator_id ?? undefined, weight: e.weight_kg != null ? String(e.weight_kg) : '', batch: e.batch_no ?? '', heat: e.heat_no ?? '', rate: e.rollers_per_kg != null ? String(e.rollers_per_kg) : undefined, note: e.note ?? '', tools: Object.fromEntries((tools[e.id] ?? []).map(x => [x.tool_type, String(x.qty)])) }
+  ? { id: e.id, roller: e.roller_id ?? undefined, operator: e.operator_id ?? undefined, weight: e.weight_kg != null ? String(e.weight_kg) : '', batch: e.batch_no ?? '', heat: e.heat_no ?? '', rate: e.rollers_per_kg != null ? String(e.rollers_per_kg) : undefined, note: e.note ?? '', tools: sumTools(tools[e.id]), picks: picksOf(tools[e.id]) }
   : { roller: m.current_roller_id ?? defs[m.id]?.roller, operator: defs[m.id]?.operator } });
 
   
@@ -205,7 +235,7 @@ function EnterSheet({ factory, isOwner }: { factory: string; isOwner: boolean })
                    {e.status === 'NOT_RUNNING' ? <div><div className="font-bold text-slate-300">Not running this shift</div>{e.note && <div className="text-amber-300 text-sm font-semibold">Reason: {e.note}</div>}</div>
                         : <><div className="flex items-center gap-2 flex-wrap"><span className="text-lg font-extrabold">{rollerLabel(factory, sizeOf.get(e.roller_id ?? '') ?? '—')}</span>{partyOf.get(e.roller_id ?? '') && <span className="text-slate-400 text-sm">{partyOf.get(e.roller_id ?? '')}</span>}<span className="text-slate-300">{e.operator_id ? opName.get(e.operator_id) ?? 'Operator' : 'No operator'}</span><span className="ml-auto text-xl font-extrabold text-amber-300">{e.rollers_forged.toLocaleString('en-IN')} rollers{e.weight_kg != null ? ` · ${Number(e.weight_kg).toLocaleString('en-IN')} kg` : ''}</span></div>
                             {(e.batch_no || e.heat_no) && <div className="text-slate-300 text-sm">Batch {e.batch_no ?? '—'} · Heat {e.heat_no ?? '—'}{e.rollers_per_kg != null ? ` · ${e.rollers_per_kg} rollers per kg` : ''}</div>}
-              {(tools[e.id]?.length ?? 0) > 0 && <div className="text-slate-300">Tools used: {tools[e.id].map(x => `${tn(x.tool_type)} × ${x.qty}`).join(' · ')}</div>}
+              {(tools[e.id]?.length ?? 0) > 0 && <div className="text-slate-300">Tools used: {tools[e.id].map(x => `${tn(x.tool_type)}${x.dim_key ? ` (${x.dim_key})` : ''} × ${x.qty}`).join(' · ')}</div>}
               {Object.keys(e.short ?? {}).length > 0 && <div className="text-amber-300 text-sm font-semibold">⚠ Stock was short: {Object.entries(e.short).map(([k, q]) => `${tn(k)} (${q})`).join(', ')}</div>}
                             {e.note && <div className="text-slate-400 text-sm">Remarks: {e.note}</div>}</>}
           {canEdit && <div className="flex gap-2 flex-wrap pt-1">
