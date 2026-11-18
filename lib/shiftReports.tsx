@@ -1,7 +1,7 @@
 'use client';
 import { useEffect, useState } from 'react';
 import { supabase } from '@/lib/supabase';
-import { rollerLabel, mname, FCHIP, FACTORIES } from '@/lib/factories';
+import { rollerLabel, sizeParty, mname, FCHIP, FACTORIES } from '@/lib/factories';
 import { ProductionTable, UtilGrid, CapacityEditor } from '@/lib/production';
 import { TOOL_LABEL, type ToolType } from '@/types/database';
 
@@ -23,7 +23,7 @@ const U = ({ v }: { v: number | null }) => v == null ? <span className="text-sla
 // Reports built from the Shift Sheet. rs = period start, re = period end (exclusive), as on the dashboard.
 export function ShiftReports({ rs, re, fsel, period }: { rs: Date; re: Date; fsel?: string | null; period: string }) {
   const [tab, setTab] = useState<Tab>('shifts'); const [shifts, setShifts] = useState<ShiftRow[]>([]); const [heads, setHeads] = useState<HeadRow[]>([]);
-  const [ops, setOps] = useState<OpRow[]>([]); const [sizes, setSizes] = useState<SizeRow[]>([]);
+  const [ops, setOps] = useState<OpRow[]>([]); const [sizes, setSizes] = useState<SizeRow[]>([]); const [partyOf, setPartyOf] = useState<Record<string, string>>({});   // roller id -> party name
   const [busy, setBusy] = useState(true); const [err, setErr] = useState(''); const [all, setAll] = useState(false); const [q, setQ] = useState(''); const [tf, setTf] = useState<string>(fsel || 'NIC'); const fac = fsel || tf;
   useEffect(() => { (async () => {
     setBusy(true); setErr('');
@@ -33,6 +33,11 @@ export function ShiftReports({ rs, re, fsel, period }: { rs: Date; re: Date; fse
     const bad = [s, h, o, z].find(x => x.error); if (bad?.error) { setErr(bad.error.message); return; }
     setShifts(s.data ?? []); setHeads(h.data ?? []); setOps(o.data ?? []); setSizes(z.data ?? []);
   })(); }, [rs.getTime(), re.getTime(), fsel]);
+  useEffect(() => { (async () => {   // the report functions return the size only; the party tells apart the same size for different parties
+    const { data } = await supabase.from('roller_master').select('id, party_name').not('party_name', 'is', null).limit(5000);
+    setPartyOf(Object.fromEntries(((data ?? []) as unknown as { id: string; party_name: string }[]).map(x => [x.id, x.party_name])));
+  })(); }, []);
+  const withParty = (id: string | null, size: string | null) => sizeParty(size == null ? null : { roller_size: size, party_name: (id && partyOf[id]) || null });
 
   // summary
   const total = shifts.reduce((a, x) => a + x.rollers, 0); const done = shifts.filter(x => x.completed).length;
@@ -44,11 +49,11 @@ export function ShiftReports({ rs, re, fsel, period }: { rs: Date; re: Date; fse
   const cell = (r?: ShiftRow) => r ? <span>{n0(r.rollers)} <span className={r.completed ? 'text-green-400' : 'text-amber-300'} title={r.completed ? 'Sheet complete' : 'Sheet not marked complete'}>{r.completed ? '✔' : '⚠'}</span></span> : <span className="text-slate-500">—</span>;
 
   // operators tab: one row per operator, with main sizes
-  const opList = Object.values(ops.reduce((a, x) => { const k = `${x.factory_id}|${x.operator_id ?? 'none'}`; (a[k] ??= { f: x.factory_id, name: x.operator_name, shifts: x.op_shifts, rollers: 0, sizes: [] as { size: string; n: number }[] }); a[k].rollers += x.rollers; a[k].sizes.push({ size: x.roller_size ?? '—', n: x.rollers }); return a; }, {} as Record<string, { f: string; name: string; shifts: number; rollers: number; sizes: { size: string; n: number }[] }>))
+  const opList = Object.values(ops.reduce((a, x) => { const k = `${x.factory_id}|${x.operator_id ?? 'none'}`; (a[k] ??= { f: x.factory_id, name: x.operator_name, shifts: x.op_shifts, rollers: 0, sizes: [] as { size: string; n: number }[] }); a[k].rollers += x.rollers; a[k].sizes.push({ size: withParty(x.roller_id, x.roller_size), n: x.rollers }); return a; }, {} as Record<string, { f: string; name: string; shifts: number; rollers: number; sizes: { size: string; n: number }[] }>))
     .sort((x, y) => y.rollers - x.rollers);
 
   // tools tab: per roller size and tool type
-  const s = q.trim().toLowerCase(); const toolRows = sizes.filter(x => !s || x.roller_size.toLowerCase().includes(s)).sort((x, y) => x.factory_id.localeCompare(y.factory_id) || x.roller_size.localeCompare(y.roller_size, undefined, { numeric: true }) || (x.tool_type ?? '').localeCompare(y.tool_type ?? ''));
+  const s = q.trim().toLowerCase(); const toolRows = sizes.filter(x => !s || withParty(x.roller_id, x.roller_size).toLowerCase().includes(s)).sort((x, y) => x.factory_id.localeCompare(y.factory_id) || x.roller_size.localeCompare(y.roller_size, undefined, { numeric: true }) || (x.tool_type ?? '').localeCompare(y.tool_type ?? ''));
   const tabs: [Tab, string][] = [['shifts', 'Shifts'], ['headers', 'Headers'], ['operators', 'Operators'], ['tools', 'Tool use'], ['table', 'Production table'], ['util', 'Utilisation']];
 
   return (<section className="rounded-2xl border-2 border-slate-700 bg-slate-900 p-4 space-y-4">
@@ -75,9 +80,9 @@ export function ShiftReports({ rs, re, fsel, period }: { rs: Date; re: Date; fse
         {!opList.length && <tr><td colSpan={6} className="px-3 py-6 text-center text-slate-500">No data in this period.</td></tr>}</tbody></table></div>
       <p className="text-xs text-slate-500">Compare operators only when they ran similar sizes. Different sizes run at different speeds, so look at “Main sizes” before reading the averages.</p></div>}
     {!busy && !err && tab === 'tools' && <div className="space-y-3">
-      <label className="block"><span className="block text-sm font-semibold text-slate-300 mb-1">Search roller size</span><input className="h-14 rounded-xl bg-slate-900 border-2 border-slate-700 px-3 text-xl w-full" placeholder="e.g. 31309" value={q} onChange={e => setQ(e.target.value)}/></label>
+      <label className="block"><span className="block text-sm font-semibold text-slate-300 mb-1">Search roller size or party</span><input className="h-14 rounded-xl bg-slate-900 border-2 border-slate-700 px-3 text-xl w-full" placeholder="e.g. 31309" value={q} onChange={e => setQ(e.target.value)}/></label>
       <div className="overflow-x-auto rounded-xl border border-slate-800"><table className="w-full min-w-[700px] text-left"><thead className="bg-slate-800 text-slate-300 text-sm"><tr>{['Roller size', 'Tool', 'Tools used', 'Rollers forged', 'Tools per 10,000 rollers', 'Rollers per tool'].map(h => <th key={h} className={th}>{h}</th>)}</tr></thead>
-        <tbody>{toolRows.map(x => <tr key={x.factory_id + x.roller_id + (x.tool_type ?? '')} className="border-t border-slate-800"><td className="px-3 py-2 font-bold whitespace-nowrap">{rollerLabel(x.factory_id, x.roller_size)}</td><td className="px-3 py-2">{x.tool_type ? tn(x.tool_type) : <span className="text-slate-500">none recorded</span>}</td>
+        <tbody>{toolRows.map(x => <tr key={x.factory_id + x.roller_id + (x.tool_type ?? '')} className="border-t border-slate-800"><td className="px-3 py-2 font-bold whitespace-nowrap">{rollerLabel(x.factory_id, withParty(x.roller_id, x.roller_size))}</td><td className="px-3 py-2">{x.tool_type ? tn(x.tool_type) : <span className="text-slate-500">none recorded</span>}</td>
           <td className="px-3 py-2">{n0(x.tools)}</td><td className="px-3 py-2">{n0(x.rollers)}</td>
           <td className="px-3 py-2 font-extrabold text-amber-300">{x.tool_type && x.rollers ? (x.tools / x.rollers * 10000).toFixed(1) : '—'}</td>
           <td className="px-3 py-2 font-bold">{x.tool_type && x.tools ? n0(x.rollers / x.tools) : '—'}</td></tr>)}

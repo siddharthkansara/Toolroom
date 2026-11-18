@@ -3,7 +3,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { Minus, Plus, X } from 'lucide-react';
 import { supabase, rpc } from '@/lib/supabase';
 import { Guard, useAuth } from '@/lib/auth';
-import { FACTORIES, mname as mcode, machineId, rollerLabel } from '@/lib/factories';
+import { FACTORIES, mname as mcode, machineId, rollerLabel, sizeParty } from '@/lib/factories';
 import { URGENCY } from '@/lib/urgency';
 import { groupByRoller, RollerAccordion } from '@/lib/rollerGroups';
 import { useOrders, chime, dt, SEL, gkey, uuid } from '@/lib/useOrders';
@@ -95,8 +95,9 @@ function Kiosk() {
   const roller = rollers.find(r => r.id === rid);
   const has = (t: ToolType) => tools.find(x => x.roller_id === rid && x.tool_type === t);
   const qq = q.trim().toLowerCase();
-  const shown = rollers.filter(r => r.roller_size.toLowerCase().includes(qq));
-  const canNew = !!qq && !rollers.some(r => r.roller_size.toLowerCase() === qq);
+  const shown = rollers.filter(r => sizeParty(r).toLowerCase().includes(qq)).sort((a, b) => sizeParty(a).localeCompare(sizeParty(b), undefined, { numeric: true }));
+  const canNew = !!qq;   // the same size can be added again for another party (migration 42)
+  const sameSize = (sz: string) => rollers.filter(r => r.id !== rid && r.roller_size.toLowerCase() === sz.trim().toLowerCase()).map(r => r.party_name || 'no party name');
   const mine = orders.filter(o => o.machine_id === mid && Date.now() - +new Date(o.created_at) < 7 * 864e5);
   const pending = (t: ToolType) => mine.filter(o => ACTIVE.includes(o.status) && o.tooling?.tool_type === t && o.roller_id === rid).reduce((a, o) => a + o.quantity - (o.qty_made ?? 0), 0);
   const picked = STD.filter(t => (qtys[t] ?? 0) > 0), otherPicked = others.filter(o => o.qty > 0);
@@ -134,7 +135,7 @@ else { const i = +per, cm = (i + 3) % 12, cy = i < 9 ? fy : fy + 1; pStart = ist
   const dy = (d: string) => new Date(d).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata', day: '2-digit', month: 'short', year: 'numeric', hour: 'numeric', minute: '2-digit', hour12: true });
   
   const sqq = sq.trim().toLowerCase();
-const rows = year.filter(o => !sqq || (o.roller?.roller_size ?? '').toLowerCase().includes(sqq));
+const rows = year.filter(o => !sqq || sizeParty(o.roller).toLowerCase().includes(sqq));
 const sum = (f: (o: OrderFull) => number) => rows.reduce((a, o) => a + f(o), 0);
 const allTotals: Record<string, number> = {};
 rows.forEach(o => { allTotals[kindOf(o)] = (allTotals[kindOf(o)] ?? 0) + o.quantity; });
@@ -171,22 +172,25 @@ const periodLabel = per === 'y' ? `FY ${fy}-${String(fy + 1).slice(2)}` : per ==
     try { await saveFormInner(); } finally { setBusy(false); }
   }
   async function saveFormInner() {
-    if (!fname.trim()) return fe.fail({ fname: 'Enter the roller size.' });
-    fe.fail({});
-    const rec = { roller_size: fname.trim(), customer_drg: drg.trim() || null, party_name: party.trim() || null, factory_id: factory };
+    const E: Record<string, string> = {};
+    if (!fname.trim()) E.fname = 'Enter the roller size.';
+    if (!rid && !party.trim()) E.party = 'Enter the party name. The same size can be for different parties.';
+    fe.fail(E); if (Object.keys(E).length) return;
+    const rec = { roller_size: fname.trim(), customer_drg: drg.trim() || null, party_name: party.trim().replace(/\s+/g, ' ') || null, factory_id: factory };
     let id = rid;
     if (!id) {
       const { data, error } = await supabase.from('roller_master').insert(rec).select().single();
       if (data) id = data.id;
-      else if (error?.code === '23505') {   // size already exists (e.g. an earlier save went through): use it instead of failing
-        const { data: ex } = await supabase.from('roller_master').select('id').eq('factory_id', factory).eq('roller_size', rec.roller_size).maybeSingle();
+      else if (error?.code === '23505') {   // this size + party already exists (e.g. an earlier save went through): use it instead of failing
+        const look = supabase.from('roller_master').select('id').eq('factory_id', factory).eq('roller_size', rec.roller_size);   // match the party too, never another party's record
+        const { data: ex } = await (rec.party_name ? look.eq('party_name', rec.party_name) : look.is('party_name', null)).maybeSingle();
         if (!ex) return fe.fail({ rform: 'Could not save: ' + error.message });
         id = ex.id;
         await supabase.from('roller_master').update(rec).eq('id', id);
       } else return fe.fail({ rform: 'Could not save: ' + error?.message });
     } else {
       const { error } = await supabase.from('roller_master').update(rec).eq('id', id);
-      if (error) return fe.fail({ rform: 'Could not save: ' + error.message });
+      if (error) return fe.fail({ rform: error.code === '23505' ? 'This roller size for this party is already in the list.' : 'Could not save: ' + error.message });
     }
     const { data: cur } = await supabase.from('tooling_master').select('id, tool_type').eq('roller_id', id!);   // fresh, not the page's cached list
     for (const t of STD) {   // every tool gets a row (Forging Pin has no details but must exist to be ordered)
@@ -322,8 +326,8 @@ const periodLabel = per === 'y' ? `FY ${fy}-${String(fy + 1).slice(2)}` : per ==
       {mid && <section><h2 className="text-lg text-slate-400 mb-2">2. Roller size</h2>
         <Lbl t="Roller size: type, or pick below"><input className={inp} placeholder="e.g. 31309" value={q} onChange={e => { setQ(e.target.value); setForm(false); }}/></Lbl>
         <div className="flex flex-wrap gap-2 mt-3">
-          {shown.map(r => <button key={r.id} onClick={() => { setRid(r.id); setQ(''); setForm(false); reset(); }} className={`${big} py-3 px-6 ${rid === r.id && !qq ? on : off}`}>{r.roller_size}</button>)}
-          {canNew && <button onClick={openNew} className={`${big} py-3 px-6 border-green-500 bg-green-600/20`}>➕ New size “{q.trim()}”</button>}</div>
+          {shown.map(r => <button key={r.id} onClick={() => { setRid(r.id); setQ(''); setForm(false); reset(); }} className={`${big} py-3 px-6 ${rid === r.id && !qq ? on : off}`}>{sizeParty(r)}</button>)}
+          {canNew && <button onClick={openNew} className={`${big} py-3 px-6 border-green-500 bg-green-600/20`}>➕ New size “{q.trim()}”{shown.length ? ' for another party' : ''}</button>}</div>
         {roller && !form && <div className="mt-3 bg-slate-900 rounded-xl p-4 border border-slate-800">
           <div className="flex justify-between items-start gap-2"><div><div className="text-xl font-bold">{rollerLabel(factory, roller.roller_size)} <span className="text-slate-400 font-normal">Drg: {roller.customer_drg ?? '—'}</span></div>
             <div className="text-slate-400">Party: {roller.party_name ?? '—'}</div></div>
@@ -336,7 +340,9 @@ const periodLabel = per === 'y' ? `FY ${fy}-${String(fy + 1).slice(2)}` : per ==
           <div className="grid md:grid-cols-3 gap-2">
             <div data-k="fname"><Lbl t="Roller size"><input className={inp + ring(fe.errs, 'fname')} value={fname} onChange={e => setFname(e.target.value)}/></Lbl><Err errs={fe.errs} k="fname"/></div>
             <Lbl t="Drawing no."><input className={inp} value={drg} onChange={e => setDrg(e.target.value)}/></Lbl>
-            <Lbl t="Party name"><input className={inp} value={party} onChange={e => setParty(e.target.value)}/></Lbl></div>
+            <div data-k="party"><Lbl t="Party name"><input list="party-names" className={inp + ring(fe.errs, 'party')} value={party} onChange={e => setParty(e.target.value)}/></Lbl><Err errs={fe.errs} k="party"/>
+              <datalist id="party-names">{Array.from(new Set(rollers.map(r => r.party_name).filter((p): p is string => !!p))).sort().map(p => <option key={p} value={p}/>)}</datalist></div></div>
+          {sameSize(fname).length > 0 && <p className="text-amber-300 text-sm font-semibold">This size is already in the list for: {sameSize(fname).join(', ')}. Use it only for a different party.</p>}
           {STD.map(t => <div key={t} className="rounded-xl border border-slate-700 p-3"><div className="mb-2 font-semibold text-lg">{TOOL_LABEL[t]}</div>
             {LAYOUT[t].map((row, i) => <div key={i} className={`grid gap-2 mb-2 ${row.length > 1 ? 'grid-cols-2' : 'grid-cols-1'}`}>{row.map(([k, p]) =>
               <Lbl key={k} t={p}><input className={inp} inputMode={k === 'code' ? 'text' : 'decimal'} value={tf[t]?.[k] ?? ''} onChange={e => setF(t, k, e.target.value)}/></Lbl>)}</div>)}</div>)}
@@ -378,7 +384,7 @@ const periodLabel = per === 'y' ? `FY ${fy}-${String(fy + 1).slice(2)}` : per ==
       <h2 className="text-xl font-bold mb-2">{mid ? `${mcode(mid)} orders` : 'Select a machine'} <span className="text-sm text-slate-500 font-normal">last 7 days</span></h2>
       {mid && !mine.length && <p className="text-slate-500">No orders yet.</p>}
       <div className="space-y-2 max-h-[70vh] overflow-y-auto">{batches.map(b => { const k = gkey(b[0]); return <button key={k} onClick={() => setView(k)} className="w-full text-left rounded-lg bg-slate-800 p-3 min-h-16 active:bg-slate-700">
-        <div className="flex justify-between gap-2"><span className="font-bold text-lg">{rollerLabel(b[0].factory_id, b[0].roller?.roller_size ?? '—')}</span><span className="text-sm text-slate-400">{dt(b[0].created_at)}</span></div>
+        <div className="flex justify-between gap-2"><span className="font-bold text-lg">{rollerLabel(b[0].factory_id, sizeParty(b[0].roller))}</span><span className="text-sm text-slate-400">{dt(b[0].created_at)}</span></div>
         <div className="text-slate-300">{b.map(o => `${kindOf(o)} ×${o.quantity}`).join(', ')}</div>
         <div className="text-xs text-amber-400">{[...new Set(b.map(o => stOf(o)))].join(' · ')} · tap to view</div></button>; })}</div>
     </aside></div>) : tab === 'all' ? (<div className="space-y-4">
@@ -404,7 +410,7 @@ const periodLabel = per === 'y' ? `FY ${fy}-${String(fy + 1).slice(2)}` : per ==
       <thead className="bg-slate-800 text-slate-300 text-sm"><tr>{['Ordered on', 'Roller size', 'Tool', 'Ordered', 'Made', 'Received','Received on', 'Status'].map(h => <th key={h} className="px-3 py-2 whitespace-nowrap">{h}</th>)}</tr></thead>
       <tbody>{rows.map(o => <tr key={o.id} className="border-t border-slate-800">
         <td className="px-3 py-2 whitespace-nowrap">{dy(o.created_at)}</td>
-        <td className="px-3 py-2 font-bold whitespace-nowrap">{rollerLabel(factory, o.roller?.roller_size ?? '—')}</td>
+        <td className="px-3 py-2 font-bold whitespace-nowrap">{rollerLabel(factory, sizeParty(o.roller))}</td>
         <td className="px-3 py-2"><div className="font-semibold">{kindOf(o)}</div>{dims(o) && <div className="text-sm text-slate-400">{dims(o)}</div>}</td>
         <td className="px-3 py-2 font-bold">{o.quantity}</td>
         <td className="px-3 py-2">{o.qty_made ?? 0}</td>
@@ -427,9 +433,9 @@ const periodLabel = per === 'y' ? `FY ${fy}-${String(fy + 1).slice(2)}` : per ==
           <h3 className="text-xl font-bold mb-2">{label} <span className="text-slate-500">{olist.length + dlist.length}</span></h3>
           {isOrd
             ? <RollerAccordion scope={st} open={openG} setOpen={setOpenG} pcs={o => o.quantity - (o.qty_made ?? 0)}
-                groups={groupByRoller(olist, o => ({ factory: o.factory_id, size: o.roller?.roller_size ?? '—', at: o.created_at }))} render={o => orderItem(o, st)}/>
+                groups={groupByRoller(olist, o => ({ factory: o.factory_id, size: sizeParty(o.roller), at: o.created_at }))} render={o => orderItem(o, st)}/>
             : <RollerAccordion scope={st} open={openG} setOpen={setOpenG} pcs={d => d.qty_made}
-                groups={groupByRoller(dlist, d => ({ factory: d.factory_id, size: d.ord!.roller?.roller_size ?? '—', at: d.made_at }))} render={d => batchItem(d, st)}/>}
+                groups={groupByRoller(dlist, d => ({ factory: d.factory_id, size: sizeParty(d.ord!.roller), at: d.made_at }))} render={d => batchItem(d, st)}/>}
               </div>; })}</div>
     </div>)}
   {viewItems.length > 0 && (() => { const f = viewItems[0]; const queued = viewItems.filter(o => o.status === 'QUEUED' && !o.qty_made); return (

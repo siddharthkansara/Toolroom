@@ -1,7 +1,7 @@
 'use client';
 import { Fragment, useEffect, useState } from 'react';
 import { supabase } from '@/lib/supabase';
-import { rollerLabel, mname } from '@/lib/factories';
+import { rollerLabel, sizeParty, mname } from '@/lib/factories';
 import { TOOL_LABEL, type ToolLife, type ToolType } from '@/types/database';
 import { TRACKED, lifeStats } from '@/lib/toolLife';
 
@@ -72,7 +72,8 @@ function SizeDetail({ uses, life }: { uses: Use[]; life: Record<string, ToolLife
 
 export function ToolLifeReport({ factory, from, to }: { factory: string; from: string; to: string }) {
   const [done, setDone] = useState<ToolLife[]>([]); const [onNow, setOnNow] = useState<ToolLife[]>([]);
-  const [sizeOf, setSizeOf] = useState<Record<string, string>>({});
+  const [sizeOf, setSizeOf] = useState<Record<string, string>>({});   // roller id -> "size · party"
+  const [rawOf, setRawOf] = useState<Record<string, { size: string; party: string }>>({});   // separate columns for the CSVs
   const [busy, setBusy] = useState(true); const [err, setErr] = useState('');
   const [tt, setTt] = useState(''); const [q, setQ] = useState(''); const [all, setAll] = useState(false);
   const [uses, setUses] = useState<Use[]>([]); const [life, setLife] = useState<Record<string, ToolLife>>({}); const [openSize, setOpenSize] = useState<Record<string, boolean>>({});
@@ -82,12 +83,13 @@ export function ToolLifeReport({ factory, from, to }: { factory: string; from: s
     Promise.all([
       supabase.from('tool_life').select('*').eq('factory_id', factory).eq('status', 'WORN_OUT').gte('ended_on', from).lt('ended_on', to),
       supabase.from('tool_life').select('*').eq('factory_id', factory).eq('status', 'ON'),
-      supabase.from('roller_master').select('id, roller_size').eq('factory_id', factory),
+      supabase.from('roller_master').select('id, roller_size, party_name').eq('factory_id', factory),
     ]).then(([a, b, r]) => {
       if (!live) return;
       const e = a.error ?? b.error ?? r.error; setErr(e ? e.message : '');
       setDone((a.data ?? []) as unknown as ToolLife[]); setOnNow((b.data ?? []) as unknown as ToolLife[]);
-      setSizeOf(Object.fromEntries(((r.data ?? []) as unknown as { id: string; roller_size: string }[]).map(x => [x.id, x.roller_size])));
+      const rr = (r.data ?? []) as unknown as { id: string; roller_size: string; party_name: string | null }[];
+      setSizeOf(Object.fromEntries(rr.map(x => [x.id, sizeParty(x)]))); setRawOf(Object.fromEntries(rr.map(x => [x.id, { size: x.roller_size, party: x.party_name ?? '' }])));
       setBusy(false);
     });
     return () => { live = false; };
@@ -125,14 +127,14 @@ export function ToolLifeReport({ factory, from, to }: { factory: string; from: s
   // CSV of this section, following the Tool and roller-size filters. Tool numbers match the screen.
   const fileBase = `tool-life_${factory}_${from.slice(0, 7)}${tt ? `_${tn(tt).toLowerCase().replace(/\s+/g, '-')}` : ''}`;
   const csvDays = () => {
-    const out: (string | number)[][] = [['Roller size', 'Date', 'Shift', 'Header', 'Tool', 'Tool size', 'kg', 'Rollers per kg', 'Rollers', 'At the end of the line']];
+    const out: (string | number)[][] = [['Roller size', 'Party', 'Date', 'Shift', 'Header', 'Tool', 'Tool size', 'kg', 'Rollers per kg', 'Rollers', 'At the end of the line']];
     sizes.forEach(([rid, us]) => { const { name, days } = toolSums(us);
-      days.forEach(u => out.push([size(rid), u.entry.work_date, u.entry.shift === 'DAY' ? 'Day' : 'Night', mname(u.entry.machine_id), name(u.machine_tool_id), u.tool?.dim_key ?? '', Number(u.kg), Number(u.entry.rollers_per_kg ?? 0), rollersOf(u), OUT[u.outcome] ?? u.outcome])); });
+      days.forEach(u => out.push([rawOf[rid]?.size ?? '—', rawOf[rid]?.party ?? '', u.entry.work_date, u.entry.shift === 'DAY' ? 'Day' : 'Night', mname(u.entry.machine_id), name(u.machine_tool_id), u.tool?.dim_key ?? '', Number(u.kg), Number(u.entry.rollers_per_kg ?? 0), rollersOf(u), OUT[u.outcome] ?? u.outcome])); });
     download(csv(out), `${fileBase}_day-by-day.csv`);
   };
   const csvTools = () => {
-    const out: (string | number)[][] = [['Roller size', 'Tool', 'Tool size', 'Header', 'First used', 'Last used', 'Lines', 'kg this month', 'Rollers this month', 'Rollers whole life', 'Now']];
-    sizes.forEach(([rid, us]) => toolSums(us).list.forEach(t => out.push([size(rid), `${tn(t.tool_type)} ${t.no}`, t.dim, t.machines.map(mname).join(', '), t.first, t.last, t.lines, Math.round(t.kg * 100) / 100, t.rollers, life[t.id] ? Number(life[t.id].rollers) : '', OUT[t.status] ?? ''])));
+    const out: (string | number)[][] = [['Roller size', 'Party', 'Tool', 'Tool size', 'Header', 'First used', 'Last used', 'Lines', 'kg this month', 'Rollers this month', 'Rollers whole life', 'Now']];
+    sizes.forEach(([rid, us]) => toolSums(us).list.forEach(t => out.push([rawOf[rid]?.size ?? '—', rawOf[rid]?.party ?? '', `${tn(t.tool_type)} ${t.no}`, t.dim, t.machines.map(mname).join(', '), t.first, t.last, t.lines, Math.round(t.kg * 100) / 100, t.rollers, life[t.id] ? Number(life[t.id].rollers) : '', OUT[t.status] ?? ''])));
     download(csv(out), `${fileBase}_each-tool.csv`);
   };
   const totals = (us: Use[], k: string) => { const x = us.filter(u => u.tool_type === k); const n = new Set(x.map(u => u.machine_tool_id)).size; const kg = x.reduce((a, u) => a + Number(u.kg), 0); const r = x.reduce((a, u) => a + rollersOf(u), 0); return { n, kg, r }; };
@@ -141,7 +143,7 @@ export function ToolLifeReport({ factory, from, to }: { factory: string; from: s
   return (<div className="space-y-4">
     <div className="grid sm:grid-cols-3 gap-3">
       <label className="block"><span className={lbl}>Tool</span><select className={inp} value={tt} onChange={e => setTt(e.target.value)}><option value="">All tools</option>{TRACKED.map(k => <option key={k} value={k}>{tn(k)}</option>)}</select></label>
-      <label className="block sm:col-span-2"><span className={lbl}>Find roller size</span><input className={inp} value={q} onChange={e => setQ(e.target.value)} placeholder="Type part of a roller size"/></label></div>
+      <label className="block sm:col-span-2"><span className={lbl}>Find roller size or party</span><input className={inp} value={q} onChange={e => setQ(e.target.value)} placeholder="Type part of a roller size or party"/></label></div>
     {err && <div className="rounded-xl border-2 border-red-700 p-3 text-red-400">Could not load: {err}</div>}
     {busy ? <div className="text-slate-400">Loading…</div> : <>
       <div className="space-y-2"><h3 className="text-xl font-bold">What each die and bottom produced, by roller size</h3>

@@ -3,7 +3,7 @@ import { Fragment, useCallback, useEffect, useRef, useState } from 'react';
 import { supabase, rpc } from '@/lib/supabase';
 import { uuid } from '@/lib/useOrders';
 import { CheckLines } from '@/lib/checkView';
-import { rollerLabel, mname, FACTORIES } from '@/lib/factories';
+import { rollerLabel, sizeParty, mname, FACTORIES } from '@/lib/factories';
 import { TOOL_LABEL, STOCK_ONLY_LABEL, OTHER_PREFIX, stockToolName, type RollerMaster, type InventoryStock, type InventoryLocation, type InventoryMove, type InventoryTakedown, type InventoryRequest, type HeaderMachine, type ToolType, type ToolingMaster, type DimCheck } from '@/types/database';
 import { useVisibleInterval } from '@/lib/useVisibleInterval';
 import { Err, enterTo, ring, Toast, useFormErrors, type Errs } from '@/lib/formErrors';
@@ -100,10 +100,11 @@ function AddStock({ factory, rolls, master, locs, otherNames, onDone, onReload, 
   const [nOther, setNOther] = useState(1); const [names, setNames] = useState<Record<string, string>>({});   // named "Other tool" rows
   const sameAs = (v: string) => otherNames.find(n => n.toLowerCase() === v.toLowerCase()) ?? v;   // "spring" joins the existing "Spring" stock line
   const rowIds = [...ADD_TOOLS, ...Array.from({ length: nOther }, (_, i) => `OTHER#${i}`)];
-  const list = rolls.filter(r => !f.trim() || r.roller_size.toLowerCase().includes(f.trim().toLowerCase())).sort((a, b) => a.roller_size.localeCompare(b.roller_size, undefined, { numeric: true }));
+  const list = rolls.filter(r => !f.trim() || sizeParty(r).toLowerCase().includes(f.trim().toLowerCase())).sort((a, b) => sizeParty(a).localeCompare(sizeParty(b), undefined, { numeric: true }));
   const chosen = rid && list.some(r => r.id === rid) ? rid : list.length === 1 ? list[0].id : '';
   useEffect(() => { setDims(Object.fromEntries(ADD_TOOLS.map(t => [t, dimsFrom(master.find(x => x.roller_id === chosen && x.tool_type === t))]))); }, [chosen, master]);   // start from the roller's current values
-  const [addingSize, setAddingSize] = useState(false); const [newSize, setNewSize] = useState('');
+  const [addingSize, setAddingSize] = useState(false); const [newSize, setNewSize] = useState(''); const [newParty, setNewParty] = useState('');
+  const otherParties = newSize.trim() ? rolls.filter(r => r.roller_size.toLowerCase() === newSize.trim().toLowerCase()).map(r => r.party_name || 'no party name') : [];   // same size already there for these parties
   const { errs, fail, put, root, onFieldChange } = useFormErrors();
   const nFix = Object.keys(errs).filter(k => k !== 'form' && !k.startsWith('info:')).length;
 
@@ -115,13 +116,17 @@ function AddStock({ factory, rolls, master, locs, otherNames, onDone, onReload, 
   const total = sumOf('soft') + sumOf('hard');
 
   const addSize = async () => {   // any roller size can be added, even if no tools were ever ordered for it
-    const name = newSize.trim();
-    if (!name) { put('newsize', 'Type the roller size.'); return; }
-    const have = rolls.find(r => r.roller_size.toLowerCase() === name.toLowerCase());
-    if (have) { setRid(have.id); setF(''); setAddingSize(false); setNewSize(''); put('info:roller', `“${have.roller_size}” is already in the list, so it is now selected.`); return; }
-    const { data, error } = await supabase.from('roller_master').insert({ roller_size: name, factory_id: factory }).select('*').maybeSingle();
-    if (error) { put('newsize', error.code === '23505' ? 'That roller size already exists. Search for it in the list.' : `Could not add: ${error.message}`); return; }
-    put('info:roller', `Added roller size “${name}” and selected it.`); setNewSize(''); setAddingSize(false); setF(''); onReload();
+    const name = cleanName(newSize); const party = cleanName(newParty);
+    const E: Errs = {};
+    if (!name) E.newsize = 'Type the roller size.';
+    if (!party) E.newparty = 'Type the party name. The same size can be for different parties.';
+    fail(E); if (Object.keys(E).length) return;
+    const have = rolls.find(r => r.roller_size.toLowerCase() === name.toLowerCase() && (r.party_name ?? '').toLowerCase() === party.toLowerCase());
+    const close = () => { setNewSize(''); setNewParty(''); setAddingSize(false); setF(''); };
+    if (have) { setRid(have.id); close(); put('info:roller', `“${sizeParty(have)}” is already in the list, so it is now selected.`); return; }
+    const { data, error } = await supabase.from('roller_master').insert({ roller_size: name, party_name: party, factory_id: factory }).select('*').maybeSingle();
+    if (error) { put('newsize', error.code === '23505' ? 'This size for this party already exists. Search for it in the list.' : `Could not add: ${error.message}`); return; }
+    put('info:roller', `Added roller size “${name} · ${party}” and selected it.`); close(); onReload();
     if (data) setRid((data as unknown as RollerMaster).id);
   };
   const save = async () => {
@@ -145,7 +150,7 @@ function AddStock({ factory, rolls, master, locs, otherNames, onDone, onReload, 
     const { error } = await supabase.from('inventory_moves').insert(rows);   // all lines or none
     setBusy(false);
     if (error) { fail({ form: `Could not save: ${error.message}` }); return; }
-    setMsg(`Added ${total} pcs to ${rollerLabel(factory, rolls.find(r => r.id === chosen)?.roller_size ?? '')} (${used.length} ${used.length === 1 ? 'tool' : 'tools'}).`); setQty({}); setNames({}); setNOther(1); setNote(''); onDone();
+    setMsg(`Added ${total} pcs to ${rollerLabel(factory, sizeParty(rolls.find(r => r.id === chosen)))} (${used.length} ${used.length === 1 ? 'tool' : 'tools'}).`); setQty({}); setNames({}); setNOther(1); setNote(''); onDone();
   };
 
   const th = 'px-3 py-2 font-semibold';
@@ -153,13 +158,16 @@ function AddStock({ factory, rolls, master, locs, otherNames, onDone, onReload, 
     <div><h3 className="text-xl font-bold">Add stock you already have</h3>
       <p className="text-slate-400 text-sm">For tools that are in the toolroom but were not received through the app. Fill in every tool you have for this roller size, then save once. Tools received through the app are added automatically.</p></div>
     <div className="grid sm:grid-cols-3 gap-3">
-      <label className="block"><span className={lbl}>Find roller size</span><input className={inp} placeholder="Type to search" value={f} onChange={e => setF(e.target.value)}/></label>
-      <div data-k="roller"><label className="block"><span className={lbl}>Roller size</span><select className={inp + ring(errs, 'roller')} value={chosen} onChange={e => setRid(e.target.value)}><option value="">Choose roller size</option>{list.map(r => <option key={r.id} value={r.id}>{r.roller_size}</option>)}</select></label>
+      <label className="block"><span className={lbl}>Find roller size or party</span><input className={inp} placeholder="Type to search" value={f} onChange={e => setF(e.target.value)}/></label>
+      <div data-k="roller"><label className="block"><span className={lbl}>Roller size · Party</span><select className={inp + ring(errs, 'roller')} value={chosen} onChange={e => setRid(e.target.value)}><option value="">Choose roller size</option>{list.map(r => <option key={r.id} value={r.id}>{sizeParty(r)}</option>)}</select></label>
         <Err errs={errs} k="roller"/><Err errs={errs} k="info:roller" tone="info"/></div>
       <label className="block"><span className={lbl}>Location for all of these (optional)</span><select className={inp} value={loc} onChange={e => setLoc(e.target.value)}><option value="">Not placed yet</option>{locs.map(l => <option key={l.id} value={l.id}>{l.name}</option>)}</select></label>
       <div className="sm:col-span-3">{addingSize
-        ? <div className="flex gap-2 flex-wrap items-start" onKeyDown={enterTo(addSize)}><label className="block flex-1 min-w-[12rem]" data-k="newsize"><span className={lbl}>New roller size</span><input className={inp + ring(errs, 'newsize')} placeholder="Type the new roller size" value={newSize} onChange={e => setNewSize(e.target.value)}/><Err errs={errs} k="newsize"/></label>
-            <button className={btn + ' mt-6'} onClick={addSize}>Add size</button><button className={btn2 + ' mt-6'} onClick={() => { setAddingSize(false); setNewSize(''); fail({}); }}>Cancel</button></div>
+        ? <div className="space-y-2" onKeyDown={enterTo(addSize)}><div className="flex gap-2 flex-wrap items-start"><label className="block flex-1 min-w-[12rem]" data-k="newsize"><span className={lbl}>New roller size</span><input className={inp + ring(errs, 'newsize')} placeholder="Type the new roller size" value={newSize} onChange={e => setNewSize(e.target.value)}/><Err errs={errs} k="newsize"/></label>
+            <label className="block flex-1 min-w-[12rem]" data-k="newparty"><span className={lbl}>Party name</span><input list="party-names" className={inp + ring(errs, 'newparty')} placeholder="Type the party name" value={newParty} onChange={e => setNewParty(e.target.value)}/><Err errs={errs} k="newparty"/></label>
+            <datalist id="party-names">{Array.from(new Set(rolls.map(r => r.party_name).filter((p): p is string => !!p))).sort().map(p => <option key={p} value={p}/>)}</datalist>
+            <button className={btn + ' mt-6'} onClick={addSize}>Add size</button><button className={btn2 + ' mt-6'} onClick={() => { setAddingSize(false); setNewSize(''); setNewParty(''); fail({}); }}>Cancel</button></div>
+            {otherParties.length > 0 && <p className="text-amber-300 text-sm font-semibold">This size is already in the list for: {otherParties.join(', ')}. Add it again only for a different party.</p>}</div>
         : <button className={btn2} onClick={() => setAddingSize(true)}>＋ Roller size not in the list? Add it</button>}</div></div>
 
     <div className="overflow-x-auto rounded-xl border border-slate-700"><table className="w-full text-left">
@@ -261,7 +269,7 @@ function TakeDown({ factory, rolls, onDone, setMsg }: { factory: string; rolls: 
     setMachines(((m.data ?? []) as unknown as HeaderMachine[]).sort((a, b) => mname(a.id).localeCompare(mname(b.id), undefined, { numeric: true })));
     setRecent((r.data ?? []) as unknown as InventoryTakedown[]);
   })(); }, [factory]);
-  const list = rolls.filter(r => !f.trim() || r.roller_size.toLowerCase().includes(f.trim().toLowerCase())).sort((a, b) => a.roller_size.localeCompare(b.roller_size, undefined, { numeric: true }));
+  const list = rolls.filter(r => !f.trim() || sizeParty(r).toLowerCase().includes(f.trim().toLowerCase())).sort((a, b) => sizeParty(a).localeCompare(sizeParty(b), undefined, { numeric: true }));
   const chosen = rid && list.some(r => r.id === rid) ? rid : list.length === 1 ? list[0].id : '';
   const pickMachine = (id: string) => { setMid(id); const cr = machines.find(m => m.id === id)?.current_roller_id; if (cr) { setF(''); setRid(cr); } };   // roller currently on that machine
   const { errs, fail, root, onFieldChange } = useFormErrors();
@@ -283,8 +291,8 @@ function TakeDown({ factory, rolls, onDone, setMsg }: { factory: string; rolls: 
       <div className="grid sm:grid-cols-2 gap-3">
         <label className="block"><span className={lbl}>Header machine</span><select className={inp} value={mid} onChange={e => pickMachine(e.target.value)}><option value="">Choose machine</option>{machines.map(m => <option key={m.id} value={m.id}>{mname(m.id)}</option>)}</select></label>
         <label className="block" data-k="date"><span className={lbl}>Date taken down</span><input type="date" className={inp + ring(errs, 'date')} value={date} onChange={e => setDate(e.target.value)}/><Err errs={errs} k="date"/></label>
-        <label className="block"><span className={lbl}>Find roller size</span><input className={inp} placeholder="Type to search" value={f} onChange={e => setF(e.target.value)}/></label>
-        <label className="block" data-k="roller"><span className={lbl}>Roller size</span><select className={inp + ring(errs, 'roller')} value={chosen} onChange={e => setRid(e.target.value)}><option value="">Choose roller size</option>{list.map(r => <option key={r.id} value={r.id}>{r.roller_size}</option>)}</select><Err errs={errs} k="roller"/></label>
+        <label className="block"><span className={lbl}>Find roller size or party</span><input className={inp} placeholder="Type to search" value={f} onChange={e => setF(e.target.value)}/></label>
+        <label className="block" data-k="roller"><span className={lbl}>Roller size · Party</span><select className={inp + ring(errs, 'roller')} value={chosen} onChange={e => setRid(e.target.value)}><option value="">Choose roller size</option>{list.map(r => <option key={r.id} value={r.id}>{sizeParty(r)}</option>)}</select><Err errs={errs} k="roller"/></label>
         <label className="block"><span className={lbl}>Wire size</span><input className={inp} value={wire} onChange={e => setWire(e.target.value)}/></label>
         <label className="block"><span className={lbl}>Last batta number running</span><input className={inp} value={batta} onChange={e => setBatta(e.target.value)}/></label>
         <label className="block"><span className={lbl}>Extra batta available (optional)</span><input className={inp} value={extra} onChange={e => setExtra(e.target.value)}/></label>
@@ -292,12 +300,12 @@ function TakeDown({ factory, rolls, onDone, setMsg }: { factory: string; rolls: 
       <Err errs={errs} k="form"/>
       <button className={btn} disabled={busy} onClick={save}>Save record</button></section>
     {recent.length > 0 && <section className="rounded-2xl border-2 border-slate-700 bg-slate-900 p-4 space-y-2"><h3 className="text-xl font-bold">Recent records</h3>
-      {recent.map(r => <div key={r.id} className="rounded-xl bg-slate-800 px-3 py-2"><b>{rollerLabel(factory, rolls.find(x => x.id === r.roller_id)?.roller_size ?? '—')}</b> · {dd(r.taken_down_on)}{r.machine_id ? ` · ${mname(r.machine_id)}` : ''}{r.wire_size ? ` · Wire ${r.wire_size}` : ''}{r.last_batta ? ` · Batta ${r.last_batta}` : ''}{r.extra_batta ? ` + ${r.extra_batta}` : ''}</div>)}</section>}
+      {recent.map(r => <div key={r.id} className="rounded-xl bg-slate-800 px-3 py-2"><b>{rollerLabel(factory, sizeParty(rolls.find(x => x.id === r.roller_id)))}</b> · {dd(r.taken_down_on)}{r.machine_id ? ` · ${mname(r.machine_id)}` : ''}{r.wire_size ? ` · Wire ${r.wire_size}` : ''}{r.last_batta ? ` · Batta ${r.last_batta}` : ''}{r.extra_batta ? ` + ${r.extra_batta}` : ''}</div>)}</section>}
   </div>);
 }
 
 // ---- Find a roller size in all factories, and ask for tools ----
-type SearchRow = { factory_id: string; roller_size: string; tool_type: string; state: string; qty: number; location: string | null; last_move: string; dim_key: string };
+type SearchRow = { factory_id: string; roller_size: string; party_name: string | null; tool_type: string; state: string; qty: number; location: string | null; last_move: string; dim_key: string };
 const rpcData = <T,>(fn: string, args: object) => (supabase.rpc as unknown as (f: string, a: object) => Promise<{ data: T | null; error: { message: string } | null }>).call(supabase, fn, args);
 const agoTxt = (t: string) => { const days = Math.floor((+new Date(istDate()) - +new Date(new Date(+new Date(t) + 330 * 60000).toISOString().slice(0, 10))) / 86400000); return days <= 0 ? 'today' : days === 1 ? 'yesterday' : `${days} days ago`; };
 function OtherFactories({ factory, setMsg, onRequested }: { factory: string; setMsg: (m: string) => void; onRequested: () => void }) {
@@ -316,22 +324,23 @@ function OtherFactories({ factory, setMsg, onRequested }: { factory: string; set
     const qty = num(n);
     if (qty < 1 || qty > max) { fail({ qty: `Enter a number from 1 to ${max}.` }); return; }
     fail({}); setSending(true);
-    const { error } = await rpc('inventory_request_create', { p_source: f, p_requester: factory, p_roller_size: sz, p_tool_type: tool, p_state: st, p_qty: qty, p_note: note, p_dim_key: dim });
+    const one = (rows ?? []).find(r => sizeParty(r) === sz);   // sz is "size · party": send both separately
+    const { error } = await rpc('inventory_request_create', { p_source: f, p_requester: factory, p_roller_size: one?.roller_size ?? sz, p_tool_type: tool, p_state: st, p_qty: qty, p_note: note, p_dim_key: dim, p_party: one?.party_name ?? null });
     setSending(false);
     if (error) { fail({ form: `Could not send: ${error.message}` }); return; }
     setMsg(`Request sent to ${f}.`); setAsk(''); setNote(''); onRequested();
   };
-  const sizes = Array.from(new Set((rows ?? []).map(r => r.roller_size))).sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
+  const sizes = Array.from(new Set((rows ?? []).map(r => sizeParty(r)))).sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
   return (<div ref={root} onChange={onFieldChange} className="space-y-4">
     <section className="rounded-2xl border-2 border-slate-700 bg-slate-900 p-4 space-y-3">
       <h3 className="text-xl font-bold">Find a roller size in all factories</h3>
       <p className="text-slate-400 text-sm">Shows which factory has tools in stock. Tap “Request” to ask that factory for them. They will approve and move the tool, and you confirm when it arrives.</p>
-      <div className="flex gap-2 flex-wrap items-end"><label className="block flex-1 min-w-[12rem]"><span className={lbl}>Roller size</span>
-        <input className={inp} placeholder="Type roller size" value={q} onChange={e => setQ(e.target.value)} onKeyDown={e => { if (e.key === 'Enter') search(); }}/></label>
+      <div className="flex gap-2 flex-wrap items-end"><label className="block flex-1 min-w-[12rem]"><span className={lbl}>Roller size or party</span>
+        <input className={inp} placeholder="Type roller size or party" value={q} onChange={e => setQ(e.target.value)} onKeyDown={e => { if (e.key === 'Enter') search(); }}/></label>
         <button className={btn} disabled={busy || !q.trim()} onClick={search}>Search</button></div>
       {err && <p className="text-red-400 font-semibold">{err}</p>}</section>
     {rows && sizes.map(sz => <section key={sz} className="rounded-2xl border-2 border-slate-700 bg-slate-900 p-4 space-y-3"><h3 className="text-2xl font-extrabold">{sz}</h3>
-      {FACTORIES.map(f => { const mine = rows.filter(r => r.roller_size === sz && r.factory_id === f); if (!mine.length) return null; const last = mine.map(r => r.last_move).sort().slice(-1)[0];
+      {FACTORIES.map(f => { const mine = rows.filter(r => sizeParty(r) === sz && r.factory_id === f); if (!mine.length) return null; const last = mine.map(r => r.last_move).sort().slice(-1)[0];
         const lines = Object.values(mine.reduce((a, r) => { const k = r.tool_type + '|' + r.state + '|' + r.dim_key; const g = (a[k] ??= { tool: r.tool_type, state: r.state, dim: r.dim_key, qty: 0, locs: [] as string[] }); g.qty += r.qty; if (r.location) g.locs.push(`${r.location} (${r.qty})`); return a; }, {} as Record<string, { tool: string; state: string; dim: string; qty: number; locs: string[] }>));
         return (<div key={f} className="rounded-xl bg-slate-800 p-3 space-y-2">
           <div className="flex items-center gap-2 flex-wrap"><span className="text-xl font-extrabold">{f}</span>{f === factory && <span className="text-slate-400 text-sm">(your factory)</span>}<span className="ml-auto text-sm text-slate-400">last change {agoTxt(last)}</span></div>
@@ -397,13 +406,13 @@ function ReqCard({ r, factory, stock, sizeOf, locName, reload, setMsg }: { r: In
     if (error) { fail({ form: `Could not save: ${error.message}` }); return; }
     fail({}); setMsg(ok); setMode(''); setText(''); reload();
   };
-  const lines = stock.filter(x => sizeOf.get(x.roller_id) === r.roller_size && x.tool_type === r.tool_type && x.state === r.state && x.dim_key === r.dim_key);
+  const lines = stock.filter(x => sizeOf.get(x.roller_id) === sizeParty(r) &&x.tool_type === r.tool_type && x.state === r.state && x.dim_key === r.dim_key);
   const reason = (label: string, go: () => void, red: boolean) => (<div className="flex gap-2 flex-wrap items-end" onKeyDown={enterTo(go, busy)}>
     <label className="block flex-1 min-w-[12rem]"><span className={lbl}>Reason (optional)</span><input className={inp} value={text} onChange={e => setText(e.target.value)}/></label>
     <button className={red ? btnRed : btn} disabled={busy} onClick={go}>{label}</button></div>);
   return (<div className="rounded-2xl border-2 border-slate-700 bg-slate-900 p-4 space-y-2">
     <div className="flex items-center gap-2 flex-wrap"><ReqTag r={r} src={isSource}/><span className="text-sm text-slate-400">{isSource ? `Request from ${r.requester_factory}` : `Request to ${r.source_factory}`}</span></div>
-    <p className="text-xl font-bold">{reqHead(r, isSource)} <Tag s={r.state}/> · size {r.roller_size}</p>
+    <p className="text-xl font-bold">{reqHead(r, isSource)} <Tag s={r.state}/> · size {sizeParty(r)}</p>
     {r.dim_key && <p className="text-slate-300">{r.dim_key}</p>}
     {r.qty_sent != null && r.qty_sent !== r.qty_requested && <p className="text-slate-300">Asked for {r.qty_requested}, {r.qty_sent} sent</p>}
     {r.note && <p className="text-slate-300 text-sm">Note from {r.requester_factory}: {r.note}</p>}
@@ -482,7 +491,7 @@ export function InventoryTab({ factory, startView }: { factory: string; startVie
   const go = (v: View) => { setView(v); setOp(null); setMsg(''); };
   const done = () => { setOp(null); load(); };
 
-  const sizeOf = new Map(rolls.map(r => [r.id, r.roller_size])); const act = locs.filter(l => l.active); const locName = new Map(locs.map(l => [l.id, l.name])); const runOn = (id: string) => heads.filter(h => h.current_roller_id === id).map(h => mname(h.id));
+  const sizeOf = new Map(rolls.map(r => [r.id, sizeParty(r)])); /* "size · party" everywhere on this tab */ const act = locs.filter(l => l.active); const locName = new Map(locs.map(l => [l.id, l.name])); const runOn = (id: string) => heads.filter(h => h.current_roller_id === id).map(h => mname(h.id));
   const unplaced = stock.filter(x => !x.location_id);
   const key = (x: InventoryStock) => `${x.roller_id}|${x.tool_type}|${x.state}|${x.location_id ?? ''}|${x.dim_key}`;
   const soft = stock.filter(x => x.state === 'SOFT').reduce((a, x) => a + x.qty, 0), hard = stock.filter(x => x.state === 'HARD').reduce((a, x) => a + x.qty, 0);
@@ -516,7 +525,7 @@ export function InventoryTab({ factory, startView }: { factory: string; startVie
           <div className="flex items-center gap-2 flex-wrap"><span className="text-xl font-extrabold">{rollerLabel(factory, sizeOf.get(l.roller_id) ?? '—')}</span><span className="text-lg">{tn(l.tool_type)}</span><Tag s={l.state}/><span className="ml-auto text-2xl font-extrabold text-amber-300">{l.qty} pcs</span></div>          {(l.dim_key || dimMap[`${l.roller_id}|${l.tool_type}`]) && <div className="text-sm text-slate-400">{l.dim_key || dimMap[`${l.roller_id}|${l.tool_type}`]}</div>}
           {origin[`${l.roller_id}|${l.tool_type}|${l.state}`]?.kind === 'TRANSFER_IN' && <p className="text-amber-300 text-sm font-semibold">📨 Received from {(origin[`${l.roller_id}|${l.tool_type}|${l.state}`].reason ?? '').replace(/^From /, '') || 'another factory'} · {tm(origin[`${l.roller_id}|${l.tool_type}|${l.state}`].created_at)}</p>}
           <Mover line={l} locs={act} def={act.some(a => a.id === lastLoc[l.roller_id]) ? lastLoc[l.roller_id] : undefined} label="Put away" onDone={done} setMsg={setMsg}/></div>)}</section>}
-      <div className="flex gap-2 items-end flex-wrap"><label className="block flex-1 min-w-[12rem]"><span className={lbl}>Search roller size</span><input className={inp} placeholder="Type roller size" value={q} onChange={e => setQ(e.target.value)}/></label>
+      <div className="flex gap-2 items-end flex-wrap"><label className="block flex-1 min-w-[12rem]"><span className={lbl}>Search roller size or party</span><input className={inp} placeholder="Type roller size or party" value={q} onChange={e => setQ(e.target.value)}/></label>
         <button className={btn2 + ' h-14'} onClick={() => setOpen(allOpen ? {} : Object.fromEntries(groups.map(g => [g.id, true])))}>{allOpen ? 'Collapse all' : 'Expand all'}</button>
         <button className={btn2 + ' h-14'} onClick={load}>↻</button></div>
       <div className="space-y-2">{groups.map(g => { const isOpen = !!open[g.id]; const gs = g.items.filter(x => x.state === 'SOFT').reduce((a, x) => a + x.qty, 0), gh = g.items.filter(x => x.state === 'HARD').reduce((a, x) => a + x.qty, 0);

@@ -1,6 +1,6 @@
 'use client';
 import { Fragment, useEffect, useRef, useState } from 'react';
-import { FACTORIES, FCHIP, rollerLabel } from '@/lib/factories';
+import { FACTORIES, FCHIP, rollerLabel, sizeParty } from '@/lib/factories';
 import { URGENCY, cmpQueue } from '@/lib/urgency';
 import { dt } from '@/lib/useOrders';
 import { TOOL_LABEL, type OrderFull, type DeliveryFull } from '@/types/database';
@@ -61,7 +61,7 @@ export function TodayView({ orders, batches, fsel }: { orders: OrderFull[]; batc
   const pend = sel ? orders.filter(o => o.factory_id === sel && open(o)) : [];
   const byDay = new Map<string, OrderFull[]>(); pend.forEach(o => { const k = istDay(o.created_at); byDay.set(k, [...(byDay.get(k) ?? []), o]); });
   const dayList = Array.from(byDay.entries()).sort(([x], [y]) => (x < y ? -1 : 1)).map(([day, os]) => ({ day, pcs: os.reduce((a, o) => a + rem(o), 0),
-    os: os.slice().sort((x, y) => URGENCY[x.priority].rank - URGENCY[y.priority].rank || (x.roller?.roller_size ?? '').localeCompare(y.roller?.roller_size ?? '', undefined, { numeric: true })) }));
+    os: os.slice().sort((x, y) => URGENCY[x.priority].rank - URGENCY[y.priority].rank || sizeParty(x.roller).localeCompare(sizeParty(y.roller), undefined, { numeric: true })) }));
 
   const onLathe = orders.filter(o => o.status === 'ON_LATHE' && facs.includes(o.factory_id));
   const rush = orders.filter(o => o.status === 'QUEUED' && o.priority !== 'BUFFER_NEXT_SHIFT' && facs.includes(o.factory_id)).sort(cmpQueue);
@@ -94,14 +94,14 @@ export function TodayView({ orders, batches, fsel }: { orders: OrderFull[]; batc
     <div ref={panelRef}>{sel && <div className="bg-slate-900 rounded-2xl p-4 border border-slate-800 space-y-2">
       <div className="flex items-center justify-between gap-3 flex-wrap"><div className="flex items-center gap-3"><Tag f={sel}/><h3 className="text-lg font-bold">Pending toolings, date wise</h3></div>
         <button onClick={() => setSel(null)} className="min-h-10 px-4 rounded-xl border-2 border-slate-700 bg-slate-900 font-bold">Close</button></div>
-      <div className="text-sm text-slate-400">{n0(pend.reduce((a, o) => a + rem(o), 0))} pcs · {pend.length} tooling{pend.length === 1 ? '' : 's'} · {new Set(pend.map(o => o.roller?.roller_size)).size} roller size{new Set(pend.map(o => o.roller?.roller_size)).size === 1 ? '' : 's'} · oldest first</div>
+      <div className="text-sm text-slate-400">{n0(pend.reduce((a, o) => a + rem(o), 0))} pcs · {pend.length} tooling{pend.length === 1 ? '' : 's'} · {new Set(pend.map(o => sizeParty(o.roller))).size} roller size{new Set(pend.map(o => sizeParty(o.roller))).size === 1 ? '' : 's'} · oldest first</div>
       {!pend.length && <p className="text-slate-400 py-2">Nothing is pending for {sel}.</p>}
       {pend.length > 0 && <div className="max-h-[30rem] overflow-auto rounded-xl border border-slate-800"><table className="w-full text-left text-sm">
         <thead className="bg-slate-800 text-slate-300 text-xs sticky top-0"><tr><th className="px-3 py-1.5">Roller size</th><th className="px-3 py-1.5">Tooling</th><th className="px-3 py-1.5 text-right">Pending</th><th className="px-3 py-1.5">Priority</th></tr></thead>
         <tbody>{dayList.map(g => <Fragment key={g.day}>
           <tr className="bg-slate-800"><td colSpan={4} className="px-3 py-1 text-xs font-bold text-slate-300">{dayLabel(g.day, today)} <span className="font-normal text-slate-400">· {g.os.length} tooling{g.os.length === 1 ? '' : 's'} · {n0(g.pcs)} pcs</span></td></tr>
           {g.os.map(o => <tr key={o.id} className="border-t border-slate-800">
-            <td className="px-3 py-1 font-bold whitespace-nowrap">{rollerLabel(sel, o.roller?.roller_size ?? '—')}</td>
+            <td className="px-3 py-1 font-bold whitespace-nowrap">{rollerLabel(sel, sizeParty(o.roller))}</td>
             <td className="px-3 py-1 whitespace-nowrap">{tname(o)}{o.status === 'ON_LATHE' && <span title="On the lathe now"> ⚙</span>}</td>
             <td className="px-3 py-1 text-right font-bold text-amber-300 whitespace-nowrap">{n0(rem(o))}{(o.qty_made ?? 0) > 0 && <span className="text-xs font-normal text-slate-500"> of {n0(o.quantity)}</span>}</td>
             <td className="px-3 py-1">{o.priority === 'BUFFER_NEXT_SHIFT' ? <span className="text-xs text-slate-500">Normal</span> : <Pill p={o.priority}/>}</td></tr>)}</Fragment>)}</tbody></table></div>}
@@ -112,13 +112,13 @@ export function TodayView({ orders, batches, fsel }: { orders: OrderFull[]; batc
       <div className="bg-slate-900 rounded-2xl p-6 border border-slate-800">
         <h3 className="text-xl font-bold mb-1">On the lathe now</h3>
         {!onLathe.length && <p className="text-slate-400 py-3">The lathe is idle.</p>}
-        {onLathe.map(o => <Row key={o.id} lead={<Tag f={o.factory_id}/>} title={`${rollerLabel(o.factory_id, o.roller?.roller_size ?? '—')} · ${tname(o)} · ${n0(rem(o))} pcs`} sub={o.started_lathe_at ? `Running for ${ago(o.started_lathe_at)}` : 'Started'}/>)}</div>
+        {onLathe.map(o => <Row key={o.id} lead={<Tag f={o.factory_id}/>} title={`${rollerLabel(o.factory_id, sizeParty(o.roller))} · ${tname(o)} · ${n0(rem(o))} pcs`} sub={o.started_lathe_at ? `Running for ${ago(o.started_lathe_at)}` : 'Started'}/>)}</div>
       <div className="bg-slate-900 rounded-2xl p-6 border border-slate-800">
         <h3 className="text-xl font-bold mb-1">Needs attention</h3>
         {!rush.length && !atCnc.length && <p className="text-slate-400 py-3">Nothing needs attention right now.</p>}
-        {rush.slice(0, 6).map(o => <Row key={o.id} lead={<Pill p={o.priority}/>} title={`${rollerLabel(o.factory_id, o.roller?.roller_size ?? '—')} · ${tname(o)} · ${n0(rem(o))} pcs`} sub={`Waiting ${ago(o.created_at)}`}/>)}
+        {rush.slice(0, 6).map(o => <Row key={o.id} lead={<Pill p={o.priority}/>} title={`${rollerLabel(o.factory_id, sizeParty(o.roller))} · ${tname(o)} · ${n0(rem(o))} pcs`} sub={`Waiting ${ago(o.created_at)}`}/>)}
         {rush.length > 6 && <div className="text-sm text-slate-400 py-2">+ {rush.length - 6} more urgent waiting</div>}
-        {atCnc.slice(0, 4).map(d => <Row key={d.id} lead={<span className="bg-slate-700 text-slate-100 rounded-md px-2 py-0.5 text-sm font-bold whitespace-nowrap">At CNC</span>} title={`${rollerLabel(d.factory_id, d.ord!.roller?.roller_size ?? '—')} · ${tname(d.ord!)} · ${n0(d.qty_made)} pcs`} sub={`Made ${dt(d.made_at)}, not yet received`}/>)}
+        {atCnc.slice(0, 4).map(d => <Row key={d.id} lead={<span className="bg-slate-700 text-slate-100 rounded-md px-2 py-0.5 text-sm font-bold whitespace-nowrap">At CNC</span>} title={`${rollerLabel(d.factory_id, sizeParty(d.ord!.roller))} · ${tname(d.ord!)} · ${n0(d.qty_made)} pcs`} sub={`Made ${dt(d.made_at)}, not yet received`}/>)}
         {atCnc.length > 4 && <div className="text-sm text-slate-400 py-2">+ {atCnc.length - 4} more batches waiting at the CNC</div>}</div>
     </div>
   </div>);

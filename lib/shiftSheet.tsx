@@ -2,7 +2,7 @@
 import { TOOL_LIFE, TRACKED, OUTCOME_LABEL, startRows, rowsFromUse, addRow, removeRow, outcomes, assigned, problem, toolPayload, kgOf, type Outcome, type TRow, type OnTool, type UseRow } from '@/lib/toolLife';
 import { useCallback, useEffect, useState } from 'react';
 import { supabase } from '@/lib/supabase';
-import { rollerLabel, mname } from '@/lib/factories';
+import { rollerLabel, sizeParty, mname } from '@/lib/factories';
 import { ProductionTable, UtilGrid } from '@/lib/production';
 import { RollerRates } from '@/lib/rollerRates';
 import { ToolsUsed } from '@/lib/toolsUsed';
@@ -49,7 +49,7 @@ function Step({ n, title, children }: { n: number; title: string; children: Reac
 // Rows the simple tool view can show: one tool for the whole line, or an old tool taken off with 0 kg and one new tool
 const simpleShape = (rs: TRow[]) => rs.length === 1 || (rs.length === 2 && !!rs[0].tool_id && kgOf(rs[0]) === 0 && rs[0].outcome !== 'ON' && !rs[1].tool_id);
 const SIMPLE_OUT: [Outcome, string][] = [['ON', 'Still on'], ['WORN_OUT', 'Worn out'], ['REMOVED', 'Taken off (still usable)']];
-const rLabel = (r: RollerMaster) => (r.party_name ? `${r.roller_size} · ${r.party_name}` : r.roller_size);
+const rLabel = (r: RollerMaster) => sizeParty(r);
 const lower = (v: string) => v.trim().toLowerCase();
 
 // ---- One line: a header running one roller size ----
@@ -60,10 +60,11 @@ function EntryForm({ factory, date, shift, machine, rolls, ops, init, onSaved, o
   const [t, setT] = useState<Record<string, string>>(init.tools ?? {}); const [note, setNote] = useState(init.note ?? ''); const [wt, setWt] = useState(init.weight ?? '');
   const [batch, setBatch] = useState(init.batch ?? ''); const [heat, setHeat] = useState(init.heat ?? ''); const [rates, setRates] = useState<Record<string, number>>({});
   useEffect(() => { rpcData<{ roller_id: string; rollers_per_kg: number | null }[]>('roller_rates_list', { p_factory: factory }).then(({ data }) => { const m: Record<string, number> = {}; (data ?? []).forEach(x => { if (x.rollers_per_kg != null) m[x.roller_id] = Number(x.rollers_per_kg); }); setRates(m); }); }, [factory]);
-  const [addingSize, setAddingSize] = useState(false); const [newSize, setNewSize] = useState('');
+  const [addingSize, setAddingSize] = useState(false); const [newSize, setNewSize] = useState(''); const [newParty, setNewParty] = useState('');
   const [adding, setAdding] = useState(false); const [newOp, setNewOp] = useState(''); const [busy, setBusy] = useState(false);
-  const sorted = [...rolls].sort((a, b) => a.roller_size.localeCompare(b.roller_size, undefined, { numeric: true }));
-  const exact = rolls.find(r => lower(rLabel(r)) === lower(rtext) || lower(r.roller_size) === lower(rtext));   // typed or picked from the list
+  const sorted = [...rolls].sort((a, b) => rLabel(a).localeCompare(rLabel(b), undefined, { numeric: true }));
+  const bySize = rolls.filter(r => lower(r.roller_size) === lower(rtext));   // a bare size counts only when one party has it
+  const exact = rolls.find(r => lower(rLabel(r)) === lower(rtext)) ?? (bySize.length === 1 ? bySize[0] : undefined);   // typed or picked from the list
   const matches = lower(rtext) ? sorted.filter(r => lower(rLabel(r)).includes(lower(rtext))) : [];
   const chosen = exact?.id ?? (matches.length === 1 ? matches[0].id : '');
   const chosenRoll = rolls.find(r => r.id === chosen);
@@ -118,14 +119,17 @@ const ambiguous = (k: string) => num(t[k] ?? '') > 0 && sizes(k).length > 1 && !
   };
   const toDetail = (tt: string) => { setTrows({ ...trows, [tt]: effRows(tt) }); setMode({ ...mode, [tt]: 'detail' }); };
     const addSize = async () => {   // any roller size can be entered, even if no tools were ever ordered for it
-    const name = newSize.trim();
-   if (!name) { put('newsize', 'Type the roller size.'); return; }
-    const have = rolls.find(r => r.roller_size.toLowerCase() === name.toLowerCase());
-    if (have) { setRtext(rLabel(have)); setAddingSize(false); setNewSize(''); put('info:roller', `“${have.roller_size}” is already in the list, so it is now selected.`); return; }
-    const { data, error } = await supabase.from('roller_master').insert({ roller_size: name, factory_id: factory }).select('*').maybeSingle();
-   if (error) { put('newsize', error.code === '23505' ? 'That roller size already exists. Search for it in the list.' : `Could not add: ${error.message}`); return; }
-    put('info:roller', `Added roller size “${name}” and selected it.`); setNewSize(''); setAddingSize(false); reloadRolls();
-    if (data) setRtext(name);
+    const name = newSize.trim().replace(/\s+/g, ' '); const party = newParty.trim().replace(/\s+/g, ' ');
+    if (!name) put('newsize', 'Type the roller size.');
+    if (!party) put('newparty', 'Type the party name. The same size can be for different parties.');
+    if (!name || !party) return;
+    const close = () => { setAddingSize(false); setNewSize(''); setNewParty(''); };
+    const have = rolls.find(r => lower(r.roller_size) === lower(name) && lower(r.party_name ?? '') === lower(party));
+    if (have) { setRtext(rLabel(have)); close(); put('info:roller', `“${rLabel(have)}” is already in the list, so it is now selected.`); return; }
+    const { data, error } = await supabase.from('roller_master').insert({ roller_size: name, party_name: party, factory_id: factory }).select('*').maybeSingle();
+    if (error) { put('newsize', error.code === '23505' ? 'This size for this party already exists. Search for it in the list.' : `Could not add: ${error.message}`); return; }
+    put('info:roller', `Added roller size “${name} · ${party}” and selected it.`); close(); reloadRolls();
+    if (data) setRtext(`${name} · ${party}`);
   };
   const addOp = async () => {
     if (!newOp.trim()) { put('newop', 'Type the operator’s name.'); return; }
@@ -189,7 +193,11 @@ const ambiguous = (k: string) => num(t[k] ?? '') > 0 && sizes(k).length > 1 && !
         <div data-k="op"><label className="block"><span className={lbl}>Operator</span><select className={inp + ring(errs, 'op')} value={op} onChange={e => setOp(e.target.value)}><option value="">Choose operator</option>{ops.filter(o => o.active || o.id === op).map(o => <option key={o.id} value={o.id}>{o.name}</option>)}</select></label>
           <Err errs={errs} k="op"/><Err errs={errs} k="info:op" tone="info"/>
           <button className="mt-1 text-amber-300 font-bold underline min-h-10" onClick={() => setAdding(!adding)}>+ New operator</button></div></div>
-      {addingSize && <div className="flex gap-2 flex-wrap items-end" onKeyDown={enterTo(addSize)}><label className="block flex-1 min-w-[12rem]" data-k="newsize"><span className={lbl}>New roller size</span><input className={inp + ring(errs, 'newsize')} value={newSize} onChange={e => setNewSize(e.target.value)}/><Err errs={errs} k="newsize"/></label><button className={btn} onClick={addSize}>Add</button></div>}
+      {addingSize && <div className="space-y-2" onKeyDown={enterTo(addSize)}><div className="flex gap-2 flex-wrap items-start"><label className="block flex-1 min-w-[12rem]" data-k="newsize"><span className={lbl}>New roller size</span><input className={inp + ring(errs, 'newsize')} value={newSize} onChange={e => setNewSize(e.target.value)}/><Err errs={errs} k="newsize"/></label>
+        <label className="block flex-1 min-w-[12rem]" data-k="newparty"><span className={lbl}>Party name</span><input list={`parties-${machine.id}`} className={inp + ring(errs, 'newparty')} value={newParty} onChange={e => setNewParty(e.target.value)}/><Err errs={errs} k="newparty"/></label>
+        <datalist id={`parties-${machine.id}`}>{Array.from(new Set(rolls.map(r => r.party_name).filter((p): p is string => !!p))).sort().map(p => <option key={p} value={p}/>)}</datalist>
+        <button className={btn + ' mt-6'} onClick={addSize}>Add</button></div>
+        {newSize.trim() && rolls.some(r => lower(r.roller_size) === lower(newSize)) && <p className="text-amber-300 text-sm font-semibold">This size is already in the list for: {rolls.filter(r => lower(r.roller_size) === lower(newSize)).map(r => r.party_name || 'no party name').join(', ')}. Add it again only for a different party.</p>}</div>}
       {adding && <div className="flex gap-2 flex-wrap items-end" onKeyDown={enterTo(addOp)}><label className="block flex-1 min-w-[12rem]" data-k="newop"><span className={lbl}>New operator’s name</span><input className={inp + ring(errs, 'newop')} value={newOp} onChange={e => setNewOp(e.target.value)}/><Err errs={errs} k="newop"/></label><button className={btn} onClick={addOp}>Add</button></div>}
     </Step>
 

@@ -1,7 +1,7 @@
 'use client';
 import { useEffect, useState } from 'react';
 import { supabase } from '@/lib/supabase';
-import { rollerLabel } from '@/lib/factories';
+import { rollerLabel, sizeParty } from '@/lib/factories';
 import { TOOL_LABEL, type ToolType } from '@/types/database';
 
 // Tools used in a period, one row per roller size, one column per tool type, with rollers forged beside it.
@@ -16,11 +16,14 @@ const th = 'px-3 py-2 whitespace-nowrap';
 const td = 'px-3 py-2 whitespace-nowrap';
 
 type Row = { factory_id: string; roller_id: string; roller_size: string; rollers: number; shifts: number; tool_type: string | null; tools: number };
-type Size = { id: string; size: string; rollers: number; tools: Record<string, number> };
+type Size = { id: string; size: string; party: string; rollers: number; tools: Record<string, number> };   // size = "size · party" for display and search
 
 export function ToolsUsed({ factory, from, to }: { factory: string; from: string; to: string }) {
   const [rows, setRows] = useState<Row[]>([]); const [busy, setBusy] = useState(true); const [err, setErr] = useState('');
   const [mode, setMode] = useState<Mode>('used'); const [q, setQ] = useState('');
+  const [partyOf, setPartyOf] = useState<Record<string, string>>({});   // roller id -> party name (report_sizes returns the size only)
+  useEffect(() => { supabase.from('roller_master').select('id, party_name').eq('factory_id', factory).not('party_name', 'is', null).limit(5000)
+    .then(({ data }) => setPartyOf(Object.fromEntries(((data ?? []) as unknown as { id: string; party_name: string }[]).map(x => [x.id, x.party_name])))); }, [factory]);
 
   useEffect(() => {
     let on = true; setBusy(true); setErr('');
@@ -30,9 +33,9 @@ export function ToolsUsed({ factory, from, to }: { factory: string; from: string
     return () => { on = false; };
   }, [factory, from, to]);
 
-  const bySize = new Map<string, Size>();
+  const bySize = new Map<string, Size>(); const bySizeRaw = new Map(rows.map(r => [r.roller_id, r.roller_size]));   // plain size for the CSV
   rows.forEach(r => {
-    const e = bySize.get(r.roller_id) ?? { id: r.roller_id, size: r.roller_size, rollers: r.rollers, tools: {} };
+    const e = bySize.get(r.roller_id) ?? { id: r.roller_id, size: sizeParty({ roller_size: r.roller_size, party_name: partyOf[r.roller_id] ?? null }), party: partyOf[r.roller_id] ?? '', rollers: r.rollers, tools: {} };
     if (r.tool_type) e.tools[r.tool_type] = (e.tools[r.tool_type] ?? 0) + r.tools;
     bySize.set(r.roller_id, e);
   });
@@ -48,8 +51,8 @@ export function ToolsUsed({ factory, from, to }: { factory: string; from: string
   };
 
   const csv = () => {
-    const head = ['Roller size', 'Rollers forged', ...TOOLS.map(t => TOOL_LABEL[t])];
-    const lines: (string | number)[][] = list.map(x => [x.size, x.rollers, ...TOOLS.map(t => x.tools[t] ?? 0)]);
+    const head = ['Roller size', 'Party', 'Rollers forged', ...TOOLS.map(t => TOOL_LABEL[t])];
+    const lines: (string | number)[][] = list.map(x => [bySizeRaw.get(x.id) ?? x.size, x.party, x.rollers, ...TOOLS.map(t => x.tools[t] ?? 0)]);
     lines.push(['TOTAL', tot.rollers, ...TOOLS.map(t => tot.tools[t])]);
     const text = [head, ...lines].map(l => l.map(c => `"${String(c).replace(/"/g, '""')}"`).join(',')).join('\n');
     const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([text], { type: 'text/csv' }));
@@ -59,7 +62,7 @@ export function ToolsUsed({ factory, from, to }: { factory: string; from: string
   return (<div className="space-y-3">
     <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">{MODES.map(([m, l]) => <button key={m} onClick={() => setMode(m)} className={`min-h-12 rounded-xl border-2 text-lg font-bold ${mode === m ? 'border-amber-400 bg-amber-400/20' : 'border-slate-700 bg-slate-900'}`}>{l}</button>)}</div>
     <div className="grid sm:grid-cols-3 gap-2 items-end">
-      <label className="block sm:col-span-2"><span className="block text-sm font-semibold text-slate-300 mb-1">Search roller size</span><input className="h-14 rounded-xl bg-slate-900 border-2 border-slate-700 px-3 text-xl w-full" placeholder="e.g. 31309" value={q} onChange={e => setQ(e.target.value)}/></label>
+      <label className="block sm:col-span-2"><span className="block text-sm font-semibold text-slate-300 mb-1">Search roller size or party</span><input className="h-14 rounded-xl bg-slate-900 border-2 border-slate-700 px-3 text-xl w-full" placeholder="e.g. 31309" value={q} onChange={e => setQ(e.target.value)}/></label>
       <button disabled={!list.length} onClick={csv} className="min-h-14 rounded-xl border-2 border-slate-700 bg-slate-900 text-lg font-bold disabled:opacity-50">⬇ Download CSV</button></div>
     {busy && <p className="text-slate-400">Loading…</p>}
     {err && <p className="text-red-400">Could not load: {err}</p>}

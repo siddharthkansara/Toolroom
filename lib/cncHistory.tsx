@@ -2,7 +2,7 @@
 import { Fragment, useEffect, useState } from 'react';
 import { supabase } from '@/lib/supabase';
 import { SEL, DSEL, dt, gkey } from '@/lib/useOrders';
-import { FACTORIES, FCHIP, mname, rollerLabel } from '@/lib/factories';
+import { FACTORIES, FCHIP, mname, rollerLabel, sizeParty } from '@/lib/factories';
 import { URGENCY } from '@/lib/urgency';
 import { TOOL_LABEL, type OrderFull, type DeliveryFull } from '@/types/database';
 import { CheckLines, CheckBadge } from '@/lib/checkView';
@@ -99,7 +99,7 @@ export function CncHistory({ fsel, sig }: { fsel: string | null; sig: number }) 
   // ---------- Activity ----------
   const orders = new Map<string, OrderFull>(); del.forEach(d => { if (d.ord) orders.set(d.ord.id, d.ord); }); sibs.forEach(o => orders.set(o.id, o));
   const batchesOf = new Map<string, DeliveryFull[]>(); (allDel.length ? allDel : del).forEach(d => { const l = batchesOf.get(d.order_id) ?? []; l.push(d); batchesOf.set(d.order_id, l); });
-  const entries = del.filter(d => d.ord && (!fsel || d.factory_id === fsel) && (d.ord.roller?.roller_size ?? '').toLowerCase().includes(q.trim().toLowerCase()));
+  const entries = del.filter(d => d.ord && (!fsel || d.factory_id === fsel) && sizeParty(d.ord.roller).toLowerCase().includes(q.trim().toLowerCase()));
   const pcs = entries.reduce((a, d) => a + d.qty_made, 0);
   const groupOf = (d: DeliveryFull) => {
     const k = gkey(d.ord as OrderFull); const os = Array.from(orders.values()).filter(o => gkey(o) === k).sort((a, b) => a.slip_no - b.slip_no);
@@ -107,8 +107,8 @@ export function CncHistory({ fsel, sig }: { fsel: string | null; sig: number }) 
       return { o, bs, made, toGo: o.status === 'CLOSED' ? 0 : Math.max(0, o.quantity - made), ...statusOf(o, made) }; });
     return { first: os[0] ?? (d.ord as OrderFull), rows, allDone: rows.length > 0 && rows.every(r => r.made >= r.o.quantity), madeTypes: rows.filter(r => r.made > 0).length };
   };
-  const activityCsv = () => saveCsv([['Date and time', 'Factory', 'Roller size', 'Tool', 'Quantity made', 'Status at plant', 'CNC dimension check', 'Plant check result', 'Plant check'],
-    ...entries.map(d => [dt(d.made_at), d.factory_id, d.ord?.roller?.roller_size ?? '', d.ord ? nm(d.ord) : '', d.qty_made, d.status === 'READY' ? 'At CNC' : 'Received', checkText(d.cnc_check), checkResult(d.plant_check), checkText(d.plant_check)])],
+  const activityCsv = () => saveCsv([['Date and time', 'Factory', 'Roller size', 'Party', 'Tool', 'Quantity made', 'Status at plant', 'CNC dimension check', 'Plant check result', 'Plant check'],
+    ...entries.map(d => [dt(d.made_at), d.factory_id, d.ord?.roller?.roller_size ?? '', d.ord?.roller?.party_name ?? '', d.ord ? nm(d.ord) : '', d.qty_made, d.status === 'READY' ? 'At CNC' : 'Received', checkText(d.cnc_check), checkResult(d.plant_check), checkText(d.plant_check)])],
     `cnc-activity_${fromD}${toD === addDays(fromD, 1) ? '' : `-to-${addDays(toD, -1)}`}${fsel ? `_${fsel}` : ''}.csv`);
   const periodLabel = toD === addDays(fromD, 1) ? fromD : `${fromD} to ${addDays(toD, -1)}`;
 
@@ -140,7 +140,7 @@ export function CncHistory({ fsel, sig }: { fsel: string | null; sig: number }) 
         <label className="block"><span className="block text-sm font-semibold text-slate-300 mb-1">Or pick one day</span><input type="date" max={t} value={pick} onChange={e => { setPick(e.target.value); setWin('day'); }} className={`h-12 rounded-lg border-2 px-3 text-lg ${win === 'day' ? 'border-amber-500 bg-slate-800' : 'border-slate-700 bg-slate-900'}`}/></label>
         <button onClick={() => setTick(x => x + 1)} className="px-4 h-12 rounded-lg bg-slate-800" aria-label="Refresh">↻</button>
         <button onClick={activityCsv} disabled={!entries.length} className={btn}>⬇ Download</button></div>
-      <label className="block"><span className="block text-sm font-semibold text-slate-300 mb-1">Search roller size</span><input className="h-12 rounded-xl bg-slate-900 border-2 border-slate-700 px-3 text-lg w-full" placeholder="Type roller size" value={q} onChange={e => setQ(e.target.value)}/></label>
+      <label className="block"><span className="block text-sm font-semibold text-slate-300 mb-1">Search roller size or party</span><input className="h-12 rounded-xl bg-slate-900 border-2 border-slate-700 px-3 text-lg w-full" placeholder="Type roller size or party" value={q} onChange={e => setQ(e.target.value)}/></label>
       <div className="text-slate-300"><b className="text-slate-100 text-xl">{entries.length}</b> entr{entries.length === 1 ? 'y' : 'ies'} · <b className="text-slate-100 text-xl">{n0(pcs)}</b> pcs made · {periodLabel}</div>
       {busy && <p className="text-slate-400">Loading…</p>}
       {err && <p className="text-red-400">Could not load: {err}</p>}
@@ -149,7 +149,7 @@ export function CncHistory({ fsel, sig }: { fsel: string | null; sig: number }) 
         <button onClick={() => setOpenId(isOpen ? '' : d.id)} aria-expanded={isOpen} className="w-full text-left px-4 py-2.5 flex items-center gap-x-4 gap-y-1 flex-wrap">
           <span className="text-sm text-slate-400 w-36 shrink-0">{dt(d.made_at)}</span>
           <Tag f={d.factory_id}/>
-          <span className="text-lg font-extrabold">{rollerLabel(d.factory_id, o.roller?.roller_size ?? '—')}</span>
+          <span className="text-lg font-extrabold">{rollerLabel(d.factory_id, sizeParty(o.roller))}</span>
           <span className="text-amber-300 font-bold">{nm(o)}</span>
           <span className="ml-auto text-2xl font-extrabold">{n0(d.qty_made)} <span className="text-sm font-normal text-slate-400">pcs</span></span>
           <CheckBadge d={d}/><span className="text-slate-500">{isOpen ? '▲' : '▼'}</span></button>

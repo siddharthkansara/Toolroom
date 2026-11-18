@@ -3,7 +3,7 @@ import { useEffect, useRef, useState } from 'react';
 import { supabase, rpc } from '@/lib/supabase';
 import { Guard } from '@/lib/auth';
 import { useOrders, dt, gkey, DSEL, chime } from '@/lib/useOrders';
-import { FACTORIES, FCHIP, mname as mcode, rollerLabel } from '@/lib/factories';
+import { FACTORIES, FCHIP, mname as mcode, rollerLabel, sizeParty } from '@/lib/factories';
 import { URGENCY, cmpQueue } from '@/lib/urgency';
 import { TOOL_LABEL, type OrderFull, type DeliveryFull, type CheckItem } from '@/types/database';
 import { CncHistory } from '@/lib/cncHistory';
@@ -87,7 +87,7 @@ function Cnc() {
     const ended = new Date();
     const secs = Math.max(0, Math.round((+ended - +new Date(o.started_lathe_at)) / 1000));
     const { error } = await supabase.from('lathe_activity_logs').insert({
-      order_id: o.id, factory_id: o.factory_id, roller_size: o.roller?.roller_size ?? null, tool_type: o.tooling?.tool_type ?? 'OTHER',
+      order_id: o.id, factory_id: o.factory_id, roller_size: o.roller ? sizeParty(o.roller) : null, tool_type: o.tooling?.tool_type ?? 'OTHER',
       action, started_at: o.started_lathe_at, ended_at: ended.toISOString(), duration_seconds: secs, qty_made: qty });
     if (error) fe.put('info:log', 'Saved. Only the lathe run-time record failed: ' + error.message);
   }
@@ -117,7 +117,7 @@ function Cnc() {
     const bcard = ({ k, items }: { k: string; items: OrderFull[] }) => { const f = items[0]; const isOpen = !!openB[k];
         return (<div key={k} className="rounded-xl border-2 border-slate-700 bg-slate-900">
       <button onClick={() => setOpenB({ ...openB, [k]: !isOpen })} className="w-full text-left px-4 py-3 min-h-20 space-y-1">
-        <div className="flex items-center gap-2 flex-wrap"><span className="text-2xl font-extrabold">{rollerLabel(f.factory_id, f.roller?.roller_size ?? '—')}</span>
+        <div className="flex items-center gap-2 flex-wrap"><span className="text-2xl font-extrabold">{rollerLabel(f.factory_id, sizeParty(f.roller))}</span>
                     {items.some(o => o.priority_changed_at) && <span className="rounded px-2 text-sm font-bold bg-blue-600 text-white">⬆ Priority changed</span>}{items.some(o => o.notes) && <span title="Has a note">📝</span>}
           <span className="ml-auto text-xl">{isOpen ? '▲' : '▼'}</span></div>
         <div className="text-slate-400">{mcode(f.machine_id)} · requested {when(f.created_at)}</div>
@@ -141,7 +141,7 @@ function Cnc() {
       {bs.map(bcard)}</div>); };
 
   const dcard = ([k, items]: [string, DeliveryFull[]]) => { const f = items[0].ord!; return (<div key={k} className="rounded-2xl bg-slate-900 border-2 border-slate-700 p-4">
-    <div className="text-xl font-bold">{rollerLabel(f.factory_id, f.roller?.roller_size ?? '—')} <span className="text-slate-400 text-base font-normal">Drg {f.roller?.customer_drg ?? '—'} · {mcode(f.machine_id)}</span></div>
+    <div className="text-xl font-bold">{rollerLabel(f.factory_id, sizeParty(f.roller))} <span className="text-slate-400 text-base font-normal">Drg {f.roller?.customer_drg ?? '—'} · {mcode(f.machine_id)}</span></div>
     <div className="mt-2 space-y-1">{items.map(d => <div key={d.id} className="flex justify-between gap-3 flex-wrap rounded-lg bg-slate-800 p-2">
       <span className="font-bold text-amber-300">{nm(d.ord!)}</span>
       <span>Batch <b className="text-xl">{d.qty_made}</b> <span className="text-slate-400">(order {d.ord!.quantity}, made so far {d.ord!.qty_made ?? 0})</span></span>
@@ -181,7 +181,7 @@ function Cnc() {
       {running && (() => { const o = running; const d = done?.id === o.id ? done : null; const U = URGENCY[o.priority];
         return <div className="rounded-2xl bg-slate-900 border-4 border-blue-500 p-4">
           <div className="flex justify-between gap-2 flex-wrap"><div>
-            <div className="text-3xl font-extrabold">{rollerLabel(o.factory_id, o.roller?.roller_size ?? '—')} <span className="text-slate-400 text-xl font-semibold">Drg {o.roller?.customer_drg ?? '—'}</span></div>
+            <div className="text-3xl font-extrabold">{rollerLabel(o.factory_id, sizeParty(o.roller))} <span className="text-slate-400 text-xl font-semibold">Drg {o.roller?.customer_drg ?? '—'}</span></div>
             <div className="text-slate-300">{o.roller?.party_name ? `Party: ${o.roller.party_name} · ` : ''}Header {mcode(o.machine_id)}{o.roller_qty ? ` · ${o.roller_qty.toLocaleString('en-IN')} rollers to forge` : ''}</div>
             <div className="text-3xl mt-2 text-amber-300 font-bold">{nm(o)} · {rem(o)} to make</div>
             <div className="text-xl text-slate-300">{det(o)}</div>

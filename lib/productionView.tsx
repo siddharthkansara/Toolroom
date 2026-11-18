@@ -1,6 +1,6 @@
 'use client';
 import { Fragment, useState } from 'react';
-import { FACTORIES, FCHIP, rollerLabel } from '@/lib/factories';
+import { FACTORIES, FCHIP, rollerLabel, sizeParty } from '@/lib/factories';
 import type { DeliveryFull, OrderFull } from '@/types/database';
 
 // Owner dashboard, "Production": toolings made (pieces the CNC operator confirmed), counted on the day each batch was confirmed.
@@ -88,8 +88,8 @@ export function ProductionView({ data, from, to, mode, fsel, period }: { data: D
 
   // by roller size
   const grp: Record<string, { f: string; size: string; drg: string | null; tools: Record<string, number>; made: number; recd: number }> = {};
-  hits.forEach(h => { const key = `${h.o.factory_id}|${h.o.roller?.roller_size ?? '—'}`;
-    const g = (grp[key] ??= { f: h.o.factory_id, size: h.o.roller?.roller_size ?? '—', drg: h.o.roller?.customer_drg ?? null, tools: {}, made: 0, recd: 0 });
+  hits.forEach(h => { const key = `${h.o.factory_id}|${sizeParty(h.o.roller)}`;
+    const g = (grp[key] ??= { f: h.o.factory_id, size: sizeParty(h.o.roller), drg: h.o.roller?.customer_drg ?? null, tools: {}, made: 0, recd: 0 });
     g.tools[h.col] = (g.tools[h.col] ?? 0) + h.qty; g.made += h.qty; g.recd += h.rec; });
   const list = Object.values(grp).filter(g => rollerLabel(g.f, g.size).toLowerCase().includes(q.trim().toLowerCase())).sort((a, b) => b.made - a.made);
 

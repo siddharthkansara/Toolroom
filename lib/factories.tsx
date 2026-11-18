@@ -13,3 +13,5 @@ export const SEEDED_MACHINES: Record<Exclude<Factory, 'NIC'>, string[]> = {
 export const machineId = (f: string, code: string) => `${f}:${code.trim().toUpperCase()}`;   // same format migration 12 uses
 // Display rule: an order is always shown as "[Factory] - [Roller Size]"
 export const rollerLabel = (f: string, size: string) => `${f} - ${size}`;
+// The same roller size can exist for several parties (migration 42), so a size is shown with its party: "8x12 · ABC Bearings"
+export const sizeParty = (r?: { roller_size: string; party_name: string | null } | null) => !r ? '—' : r.party_name ? `${r.roller_size} · ${r.party_name}` : r.roller_size;

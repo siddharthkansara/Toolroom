@@ -4,7 +4,7 @@ import { supabase } from '@/lib/supabase';
 import { Guard } from '@/lib/auth';
 import { DailyProduction } from '@/lib/dailyProduction';
 import { useOrders, dt, SEL, DSEL } from '@/lib/useOrders';
-import { FACTORIES, FCHIP, mname as mcode, rollerLabel } from '@/lib/factories';
+import { FACTORIES, FCHIP, mname as mcode, rollerLabel, sizeParty } from '@/lib/factories';
 import { TOOL_LABEL, type OrderFull, type DeliveryFull, type Delivery, type LatheLog, type RollerMaster, type MonthlyProduction } from '@/types/database';
 import { StockFreshness } from '@/lib/stockReminder';
 import { ShiftReports } from '@/lib/shiftReports';
@@ -123,12 +123,12 @@ function Dashboard() {
   const lathe = orders.filter(o => o.status === 'ON_LATHE' && (!fsel || o.factory_id === fsel));
 
   const grp: Record<string, { f: string; size: string; drg: string | null; tools: Record<string, number>; made: number; recd: number }> = {};
-  dper.filter(d => d.ord && (!fsel || d.factory_id === fsel)).forEach(d => { const o = d.ord!; const key = `${o.factory_id}|${o.roller?.roller_size ?? '—'}`;
-    const g = (grp[key] ??= { f: o.factory_id, size: o.roller?.roller_size ?? '—', drg: o.roller?.customer_drg ?? null, tools: {}, made: 0, recd: 0 });
+  dper.filter(d => d.ord && (!fsel || d.factory_id === fsel)).forEach(d => { const o = d.ord!; const key = `${o.factory_id}|${sizeParty(o.roller)}`;
+    const g = (grp[key] ??= { f: o.factory_id, size: sizeParty(o.roller), drg: o.roller?.customer_drg ?? null, tools: {}, made: 0, recd: 0 });
     g.tools[kind(o)] = (g.tools[kind(o)] ?? 0) + d.qty_made; g.made += d.qty_made; g.recd += d.qty_received ?? 0; });
   const grpList = Object.values(grp).filter(g => rollerLabel(g.f, g.size).toLowerCase().includes(rsq.trim().toLowerCase())).sort((a, b) => b.made - a.made);
   const rep: Record<string, OrderFull[]> = {};
-  orders.filter(o => ym(o.created_at) === month && (!fsel || o.factory_id === fsel)).forEach(o => (rep[`${o.factory_id}|${o.roller?.roller_size ?? '—'}`] ??= []).push(o));
+  orders.filter(o => ym(o.created_at) === month && (!fsel || o.factory_id === fsel)).forEach(o => (rep[`${o.factory_id}|${sizeParty(o.roller)}`] ??= []).push(o));
   const chip = (on: boolean) => `px-5 min-h-12 rounded-xl border-2 text-lg font-bold ${on ? 'border-amber-400 bg-amber-400/20' : 'border-slate-700 bg-slate-900'}`;   // same look as the CNC page chips
       const [view, setView] = useState<'today' | 'production' | 'lathe' | 'shifts' | 'plan'>('today'); const hide = (...v: string[]) => (v.includes(view) ? '' : 'hidden');
   return (<div className="p-6 max-w-7xl mx-auto space-y-8">
@@ -186,7 +186,7 @@ function Dashboard() {
     {/* <section className={card + '' + hide('today')}><h2 className="text-xl font-bold mb-3">In progress on the CNC lathe</h2>
       {!lathe.length && <p className="text-slate-500">Lathe is idle.</p>}
       <div className="grid md:grid-cols-2 gap-3">{lathe.map(o => <div key={o.id} className="bg-slate-800 rounded-lg p-3">
-        <div className="text-lg font-bold">{rollerLabel(o.factory_id, o.roller?.roller_size ?? '—')} <span className="text-slate-400 font-normal">Header {mcode(o.machine_id)} · Drg {o.roller?.customer_drg ?? '—'}</span></div>
+        <div className="text-lg font-bold">{rollerLabel(o.factory_id, sizeParty(o.roller))} <span className="text-slate-400 font-normal">Header {mcode(o.machine_id)} · Drg {o.roller?.customer_drg ?? '—'}</span></div>
         <div className="text-amber-300 text-lg">{tname(o)} · {rem(o)} to make <span className="text-slate-400">(ordered {o.quantity})</span></div>
         <div className="text-sm text-slate-400">Requested {dt(o.created_at)}{o.started_lathe_at ? ` · started ${dt(o.started_lathe_at)}` : ''}</div></div>)}</div></section> */}
 
@@ -233,7 +233,7 @@ function Dashboard() {
       <input type="month" value={month} onChange={e => setMonth(e.target.value)} className="bg-slate-800 rounded-lg p-2"/></div>
       {!Object.keys(rep).length && <p className="text-slate-500">No orders this month.</p>}
       <div className="grid xl:grid-cols-2 gap-4">{Object.entries(rep).sort().map(([key, list]) => <div key={key} className={card}>
-        <div className="text-lg font-bold">{rollerLabel(list[0].factory_id, list[0].roller?.roller_size ?? '—')} <span className="text-slate-400 font-normal">Drg {list[0].roller?.customer_drg ?? '—'} · ordered {list.reduce((a, o) => a + o.quantity, 0)} · made {list.reduce((a, o) => a + (o.qty_made ?? 0), 0)} · received {list.reduce((a, o) => a + (o.qty_received ?? 0), 0)}</span></div>
+        <div className="text-lg font-bold">{rollerLabel(list[0].factory_id, sizeParty(list[0].roller))} <span className="text-slate-400 font-normal">Drg {list[0].roller?.customer_drg ?? '—'} · ordered {list.reduce((a, o) => a + o.quantity, 0)} · made {list.reduce((a, o) => a + (o.qty_made ?? 0), 0)} · received {list.reduce((a, o) => a + (o.qty_received ?? 0), 0)}</span></div>
         <table className="w-full mt-2 text-sm"><tbody>{[...list].sort((a, b) => +new Date(a.created_at) - +new Date(b.created_at)).map(o => <tr key={o.id} className="border-t border-slate-800">
           <td className="py-1">{dt(o.created_at)}</td><td>{mcode(o.machine_id)}</td><td>{tname(o)}</td><td className="text-right">{o.quantity}</td>
           <td className="text-right text-green-400">{o.qty_made ?? '—'}</td><td className="text-right text-sky-400">{o.qty_received ?? '—'}</td><td className="text-right text-slate-400">{stText(o)}</td><td className="text-right pl-2 whitespace-nowrap"><CheckSummary ds={dByOrder[o.id] ?? []}/></td></tr>)}</tbody></table></div>)}</div>
