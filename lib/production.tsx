@@ -2,6 +2,7 @@
 import { useEffect, useState, type ReactElement } from 'react';
 import { supabase, rpc } from '@/lib/supabase';
 import { mname, FACTORIES } from '@/lib/factories';
+import { Err, enterTo, ring, useFormErrors, type Errs } from '@/lib/formErrors';
 
 
 type Line = { work_date: string; shift: 'DAY' | 'NIGHT'; factory_id: string; machine_id: string; status: string; operator_name: string | null; roller_size: string | null; rollers: number; weight_kg: number | null; note: string | null; party_name: string | null; batch_no: string | null; heat_no: string | null; rollers_per_kg: number | null };
@@ -150,22 +151,26 @@ export function CapacityEditor() {
     const r = (data ?? []) as unknown as Head[]; setRows(r); const v: Record<string, string> = {}; r.forEach(x => { v[x.id] = x.daily_capacity ? String(x.daily_capacity) : ''; }); setVals(v);
   };
   useEffect(() => { load(); }, []);
+  const { errs, fail, root, onFieldChange } = useFormErrors();
   const mine = rows.filter(r => r.factory_id === fac).sort((a, b) => nat(a.id, b.id));
   const save = async () => {
+    const E: Errs = {};   // blank = not known yet; anything else must be a whole number
+    mine.forEach(r => { const v = (vals[r.id] ?? '').replace(/,/g, '').trim(); if (v && !/^\d+$/.test(v)) E[r.id] = 'Use a whole number, or leave it blank.'; });
+    fail(E); setMsg(''); if (Object.keys(E).length) return;
     setBusy(true); let n = 0;
     for (const r of mine) {
       const now = Math.round(+(vals[r.id] ?? '').replace(/,/g, '') || 0); const was = r.daily_capacity ?? 0;
       if (now === was) continue;
       const { error } = await rpc('set_header_capacity', { p_id: r.id, p_capacity: now > 0 ? now : null });
-      if (error) { setMsg(`Could not save ${mname(r.id)}: ${error.message}`); setBusy(false); return; }
+      if (error) { fail({ [r.id]: `Could not save: ${error.message}` }); setBusy(false); if (n) load(); return; }
       n++;
     }
     setBusy(false); setMsg(n ? `Saved ${n} header${n === 1 ? '' : 's'}.` : 'Nothing changed.'); load();
   };
-  return (<div className="rounded-xl bg-slate-800 p-4 space-y-3"><h3 className="text-lg font-bold">Header capacity</h3>
+  return (<div ref={root} onChange={onFieldChange} onKeyDown={enterTo(save, busy)} className="rounded-xl bg-slate-800 p-4 space-y-3"><h3 className="text-lg font-bold">Header capacity</h3>
     <p className="text-sm text-slate-400">Rollers a header can forge in a full day at 100%. A shift is half of this. Leave blank if not known yet.</p>
-    <div className="flex gap-2 flex-wrap">{FACTORIES.map(f => <button key={f} onClick={() => setFac(f)} className={`min-h-12 px-5 rounded-xl border-2 text-lg font-bold ${fac === f ? 'border-amber-400 bg-amber-400/20' : 'border-slate-700 bg-slate-900'}`}>{f}</button>)}</div>
-    <div className="grid sm:grid-cols-2 gap-3">{mine.map(r => <label key={r.id} className="block"><span className="block text-sm font-semibold text-slate-300 mb-1">{mname(r.id)}</span><input inputMode="numeric" className="h-14 rounded-xl bg-slate-900 border-2 border-slate-700 px-3 text-xl w-full" value={vals[r.id] ?? ''} onChange={e => setVals({ ...vals, [r.id]: e.target.value })}/></label>)}
+    <div className="flex gap-2 flex-wrap">{FACTORIES.map(f => <button key={f} onClick={() => { setFac(f); fail({}); setMsg(''); }} className={`min-h-12 px-5 rounded-xl border-2 text-lg font-bold ${fac === f ? 'border-amber-400 bg-amber-400/20' : 'border-slate-700 bg-slate-900'}`}>{f}</button>)}</div>
+    <div className="grid sm:grid-cols-2 gap-3">{mine.map(r => <label key={r.id} className="block" data-k={r.id}><span className="block text-sm font-semibold text-slate-300 mb-1">{mname(r.id)}</span><input inputMode="numeric" className={'h-14 rounded-xl bg-slate-900 border-2 border-slate-700 px-3 text-xl w-full' + ring(errs, r.id)} value={vals[r.id] ?? ''} onChange={e => setVals({ ...vals, [r.id]: e.target.value })}/><Err errs={errs} k={r.id}/></label>)}
       {!mine.length && <p className="text-slate-500">No headers found for {fac}.</p>}</div>
     <div className="flex items-center gap-3 flex-wrap"><button className="min-h-14 px-6 rounded-xl bg-green-600 text-white text-xl font-bold disabled:opacity-50" disabled={busy} onClick={save}>Save capacities</button><span className="text-amber-300 font-semibold">{msg}</span></div></div>);
 }

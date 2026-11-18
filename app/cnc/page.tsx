@@ -9,6 +9,7 @@ import { TOOL_LABEL, type OrderFull, type DeliveryFull, type CheckItem } from '@
 import { CncHistory } from '@/lib/cncHistory';
 import { CheckLines } from '@/lib/checkView';
 import { blankCheck, checkDone, orderTool, itemBad } from '@/lib/dimCheck';
+import { Err, enterTo, useFormErrors } from '@/lib/formErrors';
 
 const nm = (o: OrderFull) => (o.tooling ? TOOL_LABEL[o.tooling.tool_type] : o.custom_tool_name || 'Other tool');
 const det = (o: OrderFull) => { const k = orderTool(o); if (!k) return o.custom_dimensions ?? '';
@@ -40,6 +41,7 @@ function Cnc() {
   const [win, setWin] = useState<'today' | 'week' | 'month'>('month');
   const [showProg, setShowProg] = useState(false);
   const [done, setDone] = useState<{ id: string; qty: number } | null>(null); const [doneNote, setDoneNote] = useState(''); const [doneCheck, setDoneCheck] = useState<CheckItem[]>([]);
+  const fe = useFormErrors();   // messages shown next to the button they belong to
   const [openB, setOpenB] = useState<Record<string, boolean>>({});
 
 
@@ -87,25 +89,27 @@ function Cnc() {
     const { error } = await supabase.from('lathe_activity_logs').insert({
       order_id: o.id, factory_id: o.factory_id, roller_size: o.roller?.roller_size ?? null, tool_type: o.tooling?.tool_type ?? 'OTHER',
       action, started_at: o.started_lathe_at, ended_at: ended.toISOString(), duration_seconds: secs, qty_made: qty });
-    if (error) alert('Saved, but the runtime log failed: ' + error.message);
+    if (error) fe.put('info:log', 'Saved. Only the lathe run-time record failed: ' + error.message);
   }
   async function start(id: string) {   // In Progress
     const { error } = await supabase.from('tool_orders').update({ status: 'ON_LATHE', started_lathe_at: new Date().toISOString() }).eq('id', id);
-    if (error) alert('Another job is already on the lathe.'); reload();
+    fe.fail(error ? { [`start:${id}`]: 'Could not start. Another job may already be on the lathe.' } : {}); reload();
   }
   async function stop(id: string) {
     const o = orders.find(x => x.id === id);   // read the start time before the order is reset
     const { error } = await supabase.from('tool_orders').update({ status: 'QUEUED', started_lathe_at: null }).eq('id', id);
-    if (error) { alert('Could not stop: ' + error.message); return; }
+    if (error) { fe.fail({ run: 'Could not stop: ' + error.message }); return; }
+    fe.fail({});
     await logRun(o, 'STOPPED', null);
     setDone(null); reload();
   }
   async function finish() {   // Completed / Made: records this batch; anything not made stays in the queue
     if (!done) return;
-        if (!checkDone(doneCheck)) { alert('Write down the measured dimensions first'); return; }
+        if (!checkDone(doneCheck)) { fe.fail({ done: 'Write the measured value in every box above.' }); return; }
+    fe.fail({});
     const o = orders.find(x => x.id === done.id);   // complete_batch clears started_lathe_at, so capture it first
     const { error } = await rpc('complete_batch', { p_order: done.id, p_qty: done.qty, p_note: doneNote.trim() || null, p_check: { items: doneCheck.map(i => ({ ...i, v: i.v.trim() })) } });
-    if (error) { alert('Could not save: ' + error.message); return; }
+    if (error) { fe.fail({ done: 'Could not save: ' + error.message }); return; }
     await logRun(o, 'COMPLETED', done.qty);
     setDone(null); reload();
   }
@@ -126,7 +130,8 @@ function Cnc() {
             <div className="text-slate-300">{det(o)}</div>
             {o.notes && <div className="text-amber-300 font-semibold">📝 {o.notes}</div>}
             <div className="text-sm text-slate-400">Ordered {o.quantity}{(o.qty_made ?? 0) > 0 ? ` · already made ${o.qty_made}` : ''}</div></div>
-          <button disabled={!!running} onClick={() => start(o.id)} className="h-14 px-5 rounded-xl bg-blue-600 disabled:bg-slate-700 disabled:text-slate-500 text-lg font-bold">{running ? 'Lathe busy' : '▶ Start'}</button></div>)}</div>}
+          <button disabled={!!running} onClick={() => start(o.id)} className="h-14 px-5 rounded-xl bg-blue-600 disabled:bg-slate-700 disabled:text-slate-500 text-lg font-bold">{running ? 'Lathe busy' : '▶ Start'}</button>
+          {fe.errs[`start:${o.id}`] && <div className="w-full"><Err errs={fe.errs} k={`start:${o.id}`}/></div>}</div>)}</div>}
     </div>); };
 
   const column = (f: string) => { const bs = batchesOf(f); const w = waiting.filter(o => o.factory_id === f);
@@ -148,8 +153,9 @@ function Cnc() {
     return <div key={f} className="space-y-3"><div className="flex items-center justify-between"><FTag f={f} big/><span className="text-slate-400">{l.reduce((a, d) => a + d.qty_made, 0)} pcs</span></div>
       {!g.length && <p className="text-slate-500 py-4 text-center">None</p>}{g.map(dcard)}</div>; })}</div>);
 
-  return (<div className="p-4 max-w-7xl mx-auto space-y-4">
+  return (<div ref={fe.root} onChange={fe.onFieldChange} className="p-4 max-w-7xl mx-auto space-y-4">
     <h1 className="text-2xl font-bold">CNC {running && <span className="ml-2 text-base bg-blue-600 text-white rounded-lg px-3 py-1">Lathe busy</span>}</h1>
+    <Err errs={fe.errs} k="info:log" tone="info"/>
     <div className="grid grid-cols-3 gap-2">{([['queue', `To make (${waiting.length + (running ? 1 : 0)})`], ['ready', `Ready · at my place (${deliveries.filter(d => d.status === 'READY').length})`], ['history', 'History']] as const).map(([t, l]) =>
       <button key={t} onClick={() => setTab(t)} className={`h-16 rounded-xl border-2 text-lg font-bold ${tab === t ? 'border-amber-400 bg-amber-400/20' : 'border-slate-700 bg-slate-900'}`}>{l}</button>)}</div>
     <div className="flex gap-2 flex-wrap">{[null, ...FACTORIES].map(f => <button key={f ?? 'all'} onClick={() => setFsel(f)} className={`px-5 min-h-12 rounded-xl border-2 text-lg font-bold ${fsel === f ? 'border-amber-400 bg-amber-400/20' : 'border-slate-700 bg-slate-900'}`}>{f ?? 'All factories'}</button>)}</div>
@@ -184,8 +190,9 @@ function Cnc() {
             <div className="flex gap-2 h-fit"><FTag f={o.factory_id}/><span className={`${U.chip} rounded-lg px-3 py-0.5 font-bold`}>{U.short}</span><span className="bg-blue-600 text-white rounded-lg px-3 py-0.5 font-bold">IN PROGRESS</span></div></div>
           {!d ? <div className="grid grid-cols-2 gap-3 mt-4">
               <button onClick={() => { setDoneNote(''); setDoneCheck(blankCheck(o)); setDone({ id: o.id, qty: Math.max(1, rem(o)) }); }} className="h-20 rounded-2xl bg-green-600 text-xl font-extrabold">✔ COMPLETED / MADE</button>
-              <button onClick={() => stop(o.id)} className="h-20 rounded-2xl bg-slate-600 text-xl font-extrabold">✖ STOP</button></div>
-            : <div className="mt-4 rounded-2xl bg-slate-800 p-4 text-center space-y-3">
+              <button onClick={() => stop(o.id)} className="h-20 rounded-2xl bg-slate-600 text-xl font-extrabold">✖ STOP</button>
+              <div className="col-span-2"><Err errs={fe.errs} k="run"/></div></div>
+            : <div className="mt-4 rounded-2xl bg-slate-800 p-4 text-center space-y-3" onKeyDown={enterTo(finish)}>
               <div className="text-xl">How many did you make in this batch? <span className="text-slate-400">({rem(o)} still owed)</span></div>
               <div className="flex items-center justify-center gap-4">
                 <button onClick={() => setDone({ id: o.id, qty: Math.max(1, d.qty - 1) })} className="w-24 h-20 rounded-xl bg-slate-700 text-4xl font-bold">−</button>
@@ -203,8 +210,10 @@ function Cnc() {
               <label className="block text-left"><span className="block text-sm font-semibold text-slate-300 mb-1">Note for toolroom (optional)</span>
                 <input className="h-14 rounded-xl bg-slate-900 border-2 border-slate-700 px-3 text-lg w-full" placeholder="e.g. 3 pcs are 0.5 mm short" value={doneNote} onChange={e => setDoneNote(e.target.value)}/></label>
               <div className="text-sm text-slate-400">Anything not made stays in the queue. Only the toolroom can close the balance.</div>
+              {!checkDone(doneCheck) && <div className="text-amber-300 font-semibold">Write the measured value in every box above (numbers only where a number is asked).</div>}
+              <Err errs={fe.errs} k="done"/>
               <div className="flex gap-3"><button onClick={finish} disabled={!checkDone(doneCheck)} className="flex-1 h-20 rounded-2xl bg-green-600 disabled:bg-slate-700 disabled:text-slate-400 text-xl font-extrabold">✔ CONFIRM · READY TO DISPATCH</button>
-                <button onClick={() => setDone(null)} className="px-6 rounded-2xl bg-slate-700 text-lg">Cancel</button></div></div>}
+                <button onClick={() => { setDone(null); fe.fail({}); }} className="px-6 rounded-2xl bg-slate-700 text-lg">Cancel</button></div></div>}
         </div>; })()}
       <div className={`grid gap-4 ${facs.length > 1 ? 'lg:grid-cols-3' : ''}`}>{facs.map(column)}</div></>}
 

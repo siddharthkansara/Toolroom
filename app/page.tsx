@@ -14,6 +14,7 @@ import { CheckLines } from '@/lib/checkView';
 import { StockReminder, RequestBanner } from '@/lib/stockReminder';
 import { ShiftSheet } from '@/lib/shiftSheet';
 import { ToolPlanner } from '@/lib/planner';
+import { Err, enterTo, ring, useFormErrors } from '@/lib/formErrors';
 
 type Rec = { code: string; od: string; len: string; od2: string; step: string };
 type Other = { name: string; dims: string; qty: number; note: string };
@@ -32,6 +33,7 @@ const ACTIVE = ['QUEUED', 'ON_LATHE'];
 const COLS = [['QUEUED', 'Queued', 'border-slate-500'], ['ON_LATHE', 'On lathe (10 km)', 'border-blue-500'],
   ['READY', 'Ready to Dispatch', 'border-amber-500'], ['RECEIVED', 'Received (last 7 days)', 'border-green-500']] as const;
 const num = (s?: string) => (s ? parseFloat(s) : null);
+const actKey = (ids: string[]) => (ids.length > 1 ? 'act:group' : `act:${ids[0]}`);   // where a Delete / Close / Make Urgent error is shown
 const big = 'rounded-2xl border-2 text-2xl font-bold p-4 transition-colors';
 const on = 'border-amber-400 bg-amber-400/20', off = 'border-slate-700 bg-slate-900';
 const inp = 'h-14 rounded-xl bg-slate-900 border-2 border-slate-700 px-3 text-xl w-full';
@@ -78,6 +80,7 @@ function Kiosk() {
   const [ofac, setOfac] = useState<string>('NIC');   // owner can switch factory; toolroom users are fixed to theirs
   const factory = role === 'owner' ? ofac : myFactory ?? '';
   const all = useOrders(); const reload = all.reload;
+  const fe = useFormErrors();   // messages shown next to the box or button they belong to
   const orders = all.orders.filter(o => o.factory_id === factory);
   const deliveries = all.deliveries.filter(d => d.ord?.factory_id === factory);
 
@@ -144,15 +147,16 @@ const periodLabel = per === 'y' ? `FY ${fy}-${String(fy + 1).slice(2)}` : per ==
 
   function pickMachine(id: string) { setMid(id); setRid(machines.find(m => m.id === id)?.current_roller_id ?? null); setQ(''); setForm(false); setRq(null); reset(); }
   async function addMachine() {
-    const code = mname.trim().toUpperCase(); if (!code) return; const id = machineId(factory, code);
+    const code = mname.trim().toUpperCase(); if (!code) return fe.fail({ mach: 'Type the machine code, e.g. HD-22.' }); const id = machineId(factory, code);
     const { error } = await supabase.from('header_machines').insert({ id, factory_id: factory, code });
-    if (error) return alert('Could not add machine: ' + error.message);
+    if (error) return fe.fail({ mach: error.code === '23505' ? 'That machine is already in the list.' : 'Could not add machine: ' + error.message });
+    fe.fail({});
     await load(); setAdding(false); setMname(''); setMid(id); setRid(null); setQ(''); setForm(false); setRq(null); reset();
   }
   async function del(ids: string[]) {   // only rows still QUEUED are removed (checked in the database too)
     if (!confirm('Delete this from the order? This cannot be undone.')) return;
     const { error } = await supabase.from('tool_orders').delete().in('id', ids).eq('status', 'QUEUED');
-    if (error) alert('Could not delete: ' + error.message); reload();
+    fe.fail(error ? { [actKey(ids)]: 'Could not delete: ' + error.message } : {}); reload();
   }
   function openNew() { setRid(null); setFname(q.trim()); setDrg(''); setParty(''); setTf({}); reset(); setForm(true); }
   function openEdit() {
@@ -167,7 +171,8 @@ const periodLabel = per === 'y' ? `FY ${fy}-${String(fy + 1).slice(2)}` : per ==
     try { await saveFormInner(); } finally { setBusy(false); }
   }
   async function saveFormInner() {
-    if (!fname.trim()) return alert('Enter roller size');
+    if (!fname.trim()) return fe.fail({ fname: 'Enter the roller size.' });
+    fe.fail({});
     const rec = { roller_size: fname.trim(), customer_drg: drg.trim() || null, party_name: party.trim() || null, factory_id: factory };
     let id = rid;
     if (!id) {
@@ -175,13 +180,13 @@ const periodLabel = per === 'y' ? `FY ${fy}-${String(fy + 1).slice(2)}` : per ==
       if (data) id = data.id;
       else if (error?.code === '23505') {   // size already exists (e.g. an earlier save went through): use it instead of failing
         const { data: ex } = await supabase.from('roller_master').select('id').eq('factory_id', factory).eq('roller_size', rec.roller_size).maybeSingle();
-        if (!ex) return alert('Save failed: ' + error.message);
+        if (!ex) return fe.fail({ rform: 'Could not save: ' + error.message });
         id = ex.id;
         await supabase.from('roller_master').update(rec).eq('id', id);
-      } else return alert('Save failed: ' + error?.message);
+      } else return fe.fail({ rform: 'Could not save: ' + error?.message });
     } else {
       const { error } = await supabase.from('roller_master').update(rec).eq('id', id);
-      if (error) return alert('Save failed: ' + error.message);
+      if (error) return fe.fail({ rform: 'Could not save: ' + error.message });
     }
     const { data: cur } = await supabase.from('tooling_master').select('id, tool_type').eq('roller_id', id!);   // fresh, not the page's cached list
     for (const t of STD) {   // every tool gets a row (Forging Pin has no details but must exist to be ordered)
@@ -196,7 +201,8 @@ const periodLabel = per === 'y' ? `FY ${fy}-${String(fy + 1).slice(2)}` : per ==
 
   async function send() {
     if (!mid || !rid || !prio || !lines || busy) return;
-    if (picked.some(t => !has(t))) { alert('Add roller details first (tap Edit)'); return openEdit(); }
+    if (picked.some(t => !has(t))) { openEdit(); fe.fail({ 'info:rform': 'Add the tool details for this roller size and tap Save. Then send the order.' }); return; }
+    fe.fail({});
     setBusy(true);
     const m = machines.find(x => x.id === mid)!;
     let runId = runs.find(r => r.machine_id === mid)?.id ?? null;
@@ -212,7 +218,7 @@ const periodLabel = per === 'y' ? `FY ${fy}-${String(fy + 1).slice(2)}` : per ==
       ...otherPicked.map(o => ({ ...base, quantity: o.qty, custom_tool_name: o.name || null, custom_dimensions: o.dims || null, notes: o.note.trim() || null }))];
     const { error } = await supabase.from('tool_orders').insert(rows);
     setBusy(false);
-    if (error) return alert('Order failed: ' + error.message);
+    if (error) return fe.fail({ send: 'Order not sent: ' + error.message });
     chime(); setSent(true); load();
     setTimeout(() => { setSent(false); reset(); setView(gid); }, 1800);
   }
@@ -223,22 +229,22 @@ const periodLabel = per === 'y' ? `FY ${fy}-${String(fy + 1).slice(2)}` : per ==
     const chkOk = rchk.items.length > 0 && checkDone(rchk.items) && rchk.match !== null && (rchk.match || rchk.note.trim() !== '');
   async function confirmReceived() {   // plant confirms the quantity received for one batch
     if (!recv) return;
-        if (!chkOk) { alert('Measure and write each dimension, then choose Matches or Doesn\'t match (with a note) first'); return; }
+        if (!chkOk) { fe.fail({ [`recv:${recv.id}`]: 'Measure and write each dimension, then choose Matches or Doesn\'t match (with a note).' }); return; }
     const p_check = rchk.items.length ? { items: rchk.items.map(i => ({ ...i, v: i.v.trim() })), match: rchk.match, note: rchk.note.trim() || null } : null;
     const { error } = await rpc('receive_delivery', { p_delivery: recv.id, p_qty: recv.qty, p_check });
-    if (error) alert('Could not save: ' + error.message);
-    setRecv(null); reload();
+    if (error) { fe.fail({ [`recv:${recv.id}`]: 'Could not save: ' + error.message }); return; }   // keep the box open so nothing typed is lost
+    fe.fail({}); setRecv(null); reload();
   }
   async function closeRest(o: OrderFull) {   // toolroom closes the balance; the order stays on record at what was delivered
     if (!confirm(`Close the remaining ${o.quantity - (o.qty_made ?? 0)} pcs of ${tname(o)}? It will count as ${o.qty_made ?? 0} delivered.`)) return;
     const { error } = await rpc('close_order', { p_order: o.id });
-    if (error) alert('Could not close: ' + error.message); reload();
+    fe.fail(error ? { [actKey([o.id])]: 'Could not close: ' + error.message } : {}); reload();
   }
 
     async function raise(ids: string[], to: Priority) {   // only tools still QUEUED, and only upwards (checked in the database too)
     if (!confirm(`Change ${ids.length > 1 ? `these ${ids.length} tools` : 'this tool'} to ${URGENCY[to].label}?`)) return;
     const { error } = await rpc('order_set_priority', { p_ids: ids, p_priority: to });
-    if (error) alert('Could not change: ' + error.message); reload();
+    fe.fail(error ? { [actKey(ids)]: 'Could not change: ' + error.message } : {}); reload();
   }
   const raiseBtns = (ids: string[], cur: Priority, cls = 'min-h-11', what = '') => cur === 'URGENT_MACHINE_DOWN' ? null : (<div className="flex gap-2 mt-2">
     {cur === 'BUFFER_NEXT_SHIFT' && <button onClick={() => raise(ids, 'URGENT')} className={`flex-1 rounded-lg bg-amber-500 text-slate-950 font-bold ${cls}`}>⬆ Make Urgent{what}</button>}
@@ -253,7 +259,7 @@ const periodLabel = per === 'y' ? `FY ${fy}-${String(fy + 1).slice(2)}` : per ==
     <div className="flex gap-2 mt-2">
       {st === 'QUEUED' && !o.qty_made && <button onClick={() => del([o.id])} className="flex-1 rounded-lg bg-red-800 font-bold">🗑 Delete</button>}
             {st === 'QUEUED' && (o.qty_made ?? 0) > 0 && <button onClick={() => closeRest(o)} className="flex-1 rounded-lg bg-amber-700 font-bold">Close remaining</button>}</div>
-    {st === 'QUEUED' && raiseBtns([o.id], o.priority)}</div>);
+    {st === 'QUEUED' && raiseBtns([o.id], o.priority)}<Err errs={fe.errs} k={actKey([o.id])}/></div>);
   const batchItem = (d: DeliveryFull, st: string) => { const o = d.ord!; return (<div key={d.id} className="rounded-lg bg-slate-900 p-3">
     <div className="text-lg font-bold">{tname(o)} · batch of {d.qty_made}{st === 'RECEIVED' ? ` · got ${d.qty_received}` : ''}</div>
     <div className="text-slate-300">{dims(o)}</div>
@@ -262,7 +268,7 @@ const periodLabel = per === 'y' ? `FY ${fy}-${String(fy + 1).slice(2)}` : per ==
     {d.note && <div className="text-sm text-amber-400 mt-1">📝 CNC: {d.note}</div>}
         <CheckLines d={d}/>
     {st === 'READY' && (recv?.id === d.id
-      ? <div className="mt-2 rounded-lg bg-slate-800 p-3 text-center space-y-2">
+      ? <div className="mt-2 rounded-lg bg-slate-800 p-3 text-center space-y-2" onKeyDown={enterTo(confirmReceived)}>
           <div>How many did you receive? <span className="text-slate-400">(CNC sent {d.qty_made})</span></div>
           <div className="flex items-center justify-center gap-3">
             <button aria-label="Less" onClick={() => setRecv({ id: d.id, qty: Math.max(0, recv.qty - 1) })} className="w-16 rounded-xl bg-slate-700"><Minus className="mx-auto"/></button>
@@ -280,12 +286,14 @@ const periodLabel = per === 'y' ? `FY ${fy}-${String(fy + 1).slice(2)}` : per ==
               <div className="flex gap-2">
                 <button onClick={() => setRchk({ ...rchk, match: true })} className={`flex-1 h-12 rounded-lg font-bold ${rchk.match === true ? 'bg-green-600 text-white' : 'bg-slate-700'}`}>✔ Matches</button>
                 <button onClick={() => setRchk({ ...rchk, match: false })} className={`flex-1 h-12 rounded-lg font-bold ${rchk.match === false ? 'bg-red-700 text-white' : 'bg-slate-700'}`}>✖ Doesn't match</button></div>
-              {rchk.match === false && <input aria-label="Mismatch note" className={inp} placeholder="What is different? (required)" value={rchk.note} onChange={e => setRchk({ ...rchk, note: e.target.value })}/>}
+              {rchk.match === false && <input aria-label="Mismatch note" className={inp + (rchk.note.trim() ? '' : ' !border-amber-500')} placeholder="What is different? (required)" value={rchk.note} onChange={e => setRchk({ ...rchk, note: e.target.value })}/>}
             </div> : <div className="text-sm text-red-400 font-semibold">This batch has no CNC dimension check, so it cannot be received. Tell the owner.</div>}
+          {!chkOk && rchk.items.length > 0 && <div className="text-sm text-amber-300 font-semibold text-left">{!checkDone(rchk.items) ? 'Write what you measured in every box above.' : rchk.match === null ? 'Tap Matches or Doesn\'t match.' : 'Write what is different, then confirm.'}</div>}
+          <Err errs={fe.errs} k={`recv:${d.id}`}/>
           <div className="flex gap-2"><button onClick={confirmReceived} disabled={!chkOk} className="flex-1 rounded-lg bg-green-600 disabled:bg-slate-700 disabled:text-slate-400 font-bold">✔ Confirm received</button>
-            <button onClick={() => setRecv(null)} className="px-4 rounded-lg bg-slate-700">Cancel</button></div></div>
+            <button onClick={() => { setRecv(null); fe.fail({}); }} className="px-4 rounded-lg bg-slate-700">Cancel</button></div></div>
       : <button onClick={() => startReceive(d)} className="mt-2 w-full rounded-lg bg-green-600 font-bold">✔ Received in plant</button>)}</div>); };
-  return (<div className="p-4 max-w-7xl mx-auto">
+  return (<div ref={fe.root} onChange={fe.onFieldChange} className="p-4 max-w-7xl mx-auto">
     <header className="flex items-center justify-between mb-4">
       <div className="flex items-center gap-2 flex-wrap"><h1 className="text-xl text-slate-400">Toolroom ·</h1>
         {role === 'owner' ? FACTORIES.map(f => <button key={f} onClick={() => { setOfac(f); setMid(null); setRid(null); setQ(''); setForm(false); reset(); }} className={`px-5 min-h-12 rounded-xl border-2 text-lg font-bold ${factory === f ? on : off}`}>{f}</button>)
@@ -308,8 +316,8 @@ const periodLabel = per === 'y' ? `FY ${fy}-${String(fy + 1).slice(2)}` : per ==
           <button key={m.id} onClick={() => pickMachine(m.id)} className={`${big} h-24 ${mid === m.id ? on : off}`}>{m.code}</button>)}
           <button onClick={() => setAdding(!adding)} className={`${big} h-24 border-dashed border-green-600 text-green-400`}>➕ Add machine</button></div>
         {!machines.length && <p className="text-slate-500 mt-2">No header machines for {factory} yet. Tap Add machine.</p>}
-        {adding && <div className="flex gap-2 mt-3"><input className={inp} placeholder="New machine code, e.g. HD-22" value={mname} onChange={e => setMname(e.target.value)}/>
-          <button onClick={addMachine} className="px-8 rounded-xl bg-green-600 text-xl font-bold">Save</button></div>}</section>
+        {adding && <div className="mt-3" data-k="mach" onKeyDown={enterTo(addMachine)}><div className="flex gap-2"><input className={inp + ring(fe.errs, 'mach')} placeholder="New machine code, e.g. HD-22" value={mname} onChange={e => setMname(e.target.value)}/>
+          <button onClick={addMachine} className="px-8 rounded-xl bg-green-600 text-xl font-bold">Save</button></div><Err errs={fe.errs} k="mach"/></div>}</section>
 
       {mid && <section><h2 className="text-lg text-slate-400 mb-2">2. Roller size</h2>
         <Lbl t="Roller size: type, or pick below"><input className={inp} placeholder="e.g. 31309" value={q} onChange={e => { setQ(e.target.value); setForm(false); }}/></Lbl>
@@ -322,17 +330,19 @@ const periodLabel = per === 'y' ? `FY ${fy}-${String(fy + 1).slice(2)}` : per ==
             <button onClick={openEdit} className="px-4 rounded-xl bg-slate-800 min-h-12 text-base">✏️ Edit details</button></div>
           <div className="grid sm:grid-cols-2 gap-1 mt-2 text-slate-300">{STD.filter(t => t !== 'SHORT_PIN').map(t => { const k = has(t);
             return <div key={t}>{TOOL_LABEL[t]}: {k ? det(k) || '—' : <span className="text-slate-500">not added</span>}</div>; })}</div></div>}
-        {form && <div className="mt-3 bg-slate-900 rounded-xl p-4 border-2 border-green-600 space-y-3">
+        {form && <div className="mt-3 bg-slate-900 rounded-xl p-4 border-2 border-green-600 space-y-3" onKeyDown={enterTo(saveForm, busy)}>
           <div className="text-xl font-bold">{rid ? `Edit roller details · ${factory}` : `New roller size for ${factory}: enter details`}</div>
+          <Err errs={fe.errs} k="info:rform" tone="info"/>
           <div className="grid md:grid-cols-3 gap-2">
-            <Lbl t="Roller size"><input className={inp} value={fname} onChange={e => setFname(e.target.value)}/></Lbl>
+            <div data-k="fname"><Lbl t="Roller size"><input className={inp + ring(fe.errs, 'fname')} value={fname} onChange={e => setFname(e.target.value)}/></Lbl><Err errs={fe.errs} k="fname"/></div>
             <Lbl t="Drawing no."><input className={inp} value={drg} onChange={e => setDrg(e.target.value)}/></Lbl>
             <Lbl t="Party name"><input className={inp} value={party} onChange={e => setParty(e.target.value)}/></Lbl></div>
           {STD.map(t => <div key={t} className="rounded-xl border border-slate-700 p-3"><div className="mb-2 font-semibold text-lg">{TOOL_LABEL[t]}</div>
             {LAYOUT[t].map((row, i) => <div key={i} className={`grid gap-2 mb-2 ${row.length > 1 ? 'grid-cols-2' : 'grid-cols-1'}`}>{row.map(([k, p]) =>
               <Lbl key={k} t={p}><input className={inp} inputMode={k === 'code' ? 'text' : 'decimal'} value={tf[t]?.[k] ?? ''} onChange={e => setF(t, k, e.target.value)}/></Lbl>)}</div>)}</div>)}
+          <Err errs={fe.errs} k="rform"/>
           <div className="flex gap-3"><button onClick={saveForm} disabled={busy} className="flex-1 rounded-xl bg-green-600 disabled:bg-slate-700 text-xl font-bold">{busy ? 'Saving…' : '💾 Save'}</button>
-            <button onClick={() => setForm(false)} className="px-6 rounded-xl bg-slate-800 text-xl">Cancel</button></div></div>}
+            <button onClick={() => { setForm(false); fe.fail({}); }} className="px-6 rounded-xl bg-slate-800 text-xl">Cancel</button></div></div>}
       </section>}
 
       {mid && rid && !form && <section><h2 className="text-lg text-slate-400 mb-2">3. Rollers to forge (optional)</h2>
@@ -359,6 +369,7 @@ const periodLabel = per === 'y' ? `FY ${fy}-${String(fy + 1).slice(2)}` : per ==
         <h2 className="text-lg text-slate-400 mb-2">5. Priority</h2>
         <div className="grid grid-cols-3 gap-3">{(['BUFFER_NEXT_SHIFT', 'URGENT', 'URGENT_MACHINE_DOWN'] as Priority[]).map(p =>
           <button key={p} onClick={() => setPrio(p)} className={`${big} h-28 text-xl ${prio === p ? PRIO_ON[p] : off}`}>{PRIO_TXT[p][0]}<div className="text-sm font-normal text-slate-400">{PRIO_TXT[p][1]}</div></button>)}</div>
+        <Err errs={fe.errs} k="send"/>
         <button disabled={!prio || busy} onClick={send} className="mt-4 w-full h-24 rounded-2xl bg-green-600 disabled:bg-slate-800 disabled:text-slate-500 text-3xl font-extrabold">
           {sent ? '✅ Order sent!' : `✅ SEND ORDER (${lines} tools)`}</button></section>}
     </div>
@@ -394,7 +405,7 @@ const periodLabel = per === 'y' ? `FY ${fy}-${String(fy + 1).slice(2)}` : per ==
       <tbody>{rows.map(o => <tr key={o.id} className="border-t border-slate-800">
         <td className="px-3 py-2 whitespace-nowrap">{dy(o.created_at)}</td>
         <td className="px-3 py-2 font-bold whitespace-nowrap">{rollerLabel(factory, o.roller?.roller_size ?? '—')}</td>
-        <td className="px-3 py-2">{tname(o)}</td>
+        <td className="px-3 py-2"><div className="font-semibold">{kindOf(o)}</div>{dims(o) && <div className="text-sm text-slate-400">{dims(o)}</div>}</td>
         <td className="px-3 py-2 font-bold">{o.quantity}</td>
         <td className="px-3 py-2">{o.qty_made ?? 0}</td>
         <td className="px-3 py-2">{o.qty_received ?? '—'}</td>
@@ -435,11 +446,12 @@ const periodLabel = per === 'y' ? `FY ${fy}-${String(fy + 1).slice(2)}` : per ==
             <div className="text-sm text-slate-400">{stOf(o)}{(o.qty_made ?? 0) > 0 ? ` · made ${o.qty_made} · remaining ${Math.max(0, o.quantity - o.qty_made!)}` : ''}</div>{o.notes && <div className="text-sm text-amber-400">📝 {o.notes}</div>}</div>
             {o.status === 'QUEUED' && !o.qty_made && <button onClick={() => del([o.id])} className="px-4 rounded-xl bg-red-800 min-h-12">🗑 Delete</button>}
                         {o.status === 'QUEUED' && (o.qty_made ?? 0) > 0 && <button onClick={() => closeRest(o)} className="px-4 rounded-xl bg-amber-700 min-h-12">Close remaining</button>}</div>
-          {o.status === 'QUEUED' && raiseBtns([o.id], o.priority, 'min-h-12')}
+          {o.status === 'QUEUED' && raiseBtns([o.id], o.priority, 'min-h-12')}<Err errs={fe.errs} k={actKey([o.id])}/>
           {deliveries.filter(d => d.order_id === o.id).sort((a, b) => +new Date(a.made_at) - +new Date(b.made_at)).map((d, i) =>
             <div key={d.id} className="text-sm text-slate-300 mt-1">Batch {i + 1}: made {d.qty_made} · {dt(d.made_at)} · {d.status === 'RECEIVED' ? `received ${d.qty_received}` : 'at CNC, not received yet'}{d.note ? ` · 📝 ${d.note}` : ''}<CheckLines d={d}/></div>)}</div>)}</div>
                 {(() => { const w = viewItems.filter(o => o.status === 'QUEUED'); return w.length > 1 ? raiseBtns(w.map(o => o.id), w.some(o => o.priority === 'BUFFER_NEXT_SHIFT') ? 'BUFFER_NEXT_SHIFT' : w.some(o => o.priority === 'URGENT') ? 'URGENT' : 'URGENT_MACHINE_DOWN', 'min-h-14', ' (whole order)') : null; })()}
         {queued.length > 1 && <button onClick={() => del(queued.map(o => o.id))} className="mt-3 w-full rounded-xl bg-red-900 min-h-14 text-lg">🗑 Delete all waiting tools in this order</button>}
+        <Err errs={fe.errs} k="act:group"/>
         <p className="text-xs text-slate-500 mt-3">Only tools still waiting in the queue can be deleted. Once a tool is on the lathe, ask the CNC operator to stop the job.</p>
       </div></div>); })()}
   </div>);

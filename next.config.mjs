@@ -1,6 +1,8 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   poweredByHeader: false,
+  agentRules: false,   // stop `next dev` from creating AGENTS.md
+
   async headers() {
     return [{
       source: '/(.*)',

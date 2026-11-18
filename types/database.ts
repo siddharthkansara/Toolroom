@@ -29,13 +29,18 @@ export type ToolOrder = { id: string; slip_no: number; machine_id: string; tooli
     batta_code: string|null; od_dim: number|null; length_dim: number|null; od2_dim: number|null; step_id_dim: number|null; step_depth_dim: number|null }
 
 type T<R> = { Row: R; Insert: Partial<R>; Update: Partial<R>; Relationships: [] };
+export type MachineTool = { id: string; factory_id: string; machine_id: string; roller_id: string; tool_type: string; dim_key: string; status: 'ON'|'WORN_OUT'|'REMOVED'; mounted_entry_id: string; mounted_on: string; ended_entry_id: string|null; ended_on: string|null; created_at: string };
+export type ShiftToolUse = { entry_id: string; tool_type: string; seq: number; machine_tool_id: string; kg: number; outcome: 'ON'|'WORN_OUT'|'REMOVED' };
+export type ToolLife = { id: string; factory_id: string; machine_id: string; roller_id: string; tool_type: string; dim_key: string; status: string; mounted_on: string; ended_on: string|null; kg: number; rollers: number; lines: number };
+
 export type Database = { public: {
   Tables: { roller_master: T<RollerMaster>; tooling_master: T<ToolingMaster>; header_machines: T<HeaderMachine>;
     production_runs: T<ProductionRun>; tool_orders: T<ToolOrder>; deliveries: T<Delivery>; lathe_activity_logs: T<LatheLog>; factories: T<{ id: string; name: string }>; profiles: T<{ id: string; role: string; factory_id: string | null }>;
     monthly_production: T<MonthlyProduction>;
     inventory_moves: T<InventoryMove>; inventory_locations: T<InventoryLocation>; inventory_daily_checks: T<InventoryCheck>; inventory_settings: T<InventorySettings>; inventory_takedowns: T<InventoryTakedown>; inventory_requests: T<InventoryRequest>;
-    header_operators: T<HeaderOperator>; shift_entries: T<ShiftEntry>; shift_tools: T<ShiftTool>; shift_sheets: T<ShiftSheet>; shift_settings: T<ShiftSettings> };
-  Views: { inventory_stock: { Row: InventoryStock; Relationships: [] }; shift_totals: { Row: ShiftTotals; Relationships: [] }; shift_entries_live: { Row: ShiftEntry; Relationships: [] } };
+    header_operators: T<HeaderOperator>; shift_entries: T<ShiftEntry>; shift_tools: T<ShiftTool>; shift_sheets: T<ShiftSheet>; shift_settings: T<ShiftSettings>;
+    machine_tools: T<MachineTool>; shift_tool_use: T<ShiftToolUse> };
+  Views: { inventory_stock: { Row: InventoryStock; Relationships: [] }; shift_totals: { Row: ShiftTotals; Relationships: [] }; shift_entries_live: { Row: ShiftEntry; Relationships: [] }; tool_life: { Row: ToolLife; Relationships: [] } };
   Functions: {}; Enums: {}; CompositeTypes: {} } }
 
 export type OrderFull = ToolOrder & {
@@ -43,6 +48,11 @@ export type OrderFull = ToolOrder & {
   tooling: ToolingMaster | null };
 
 export const TOOL_LABEL: Record<ToolType,string> = { DIE_TOP:'Die Top', BOTTOM:'Bottom', FACING_PUNCH:'Forging Punch', SHORT_PIN:'Forging Pin', CUTTER:'Cutter', OTHER:'Other tool' };
+// Tools kept in stock only (Add stock): not ordered from the CNC and not on the shift sheet. Stored as plain text in inventory_moves.tool_type.
+export const STOCK_ONLY_LABEL: Record<string,string> = { CUTTING_QUILL:'Cutting Quill', BUSH_MAIN:'Bush Main', BUSH_BACK:'Bush Back', BUSH_PIN:'Bush Pin', DIE_PIN:'Die Pin' };
+// A named "other tool" added in Add stock is stored as 'OTHER:<name>', so each name is its own stock line
+export const OTHER_PREFIX = 'OTHER:';
+export const stockToolName = (t: string) => TOOL_LABEL[t as ToolType] ?? STOCK_ONLY_LABEL[t] ?? (t.startsWith(OTHER_PREFIX) ? t.slice(OTHER_PREFIX.length) : t);
 
 export type CheckItem = { k: string; spec: string; v: string };   // k = what is checked, spec = specified value, v = value written down
 export type DimCheck = { items: CheckItem[]; at?: string; match?: boolean; note?: string };

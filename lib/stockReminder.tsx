@@ -2,7 +2,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { supabase } from '@/lib/supabase';
 import { istDate, needsAction } from '@/lib/inventory';
-import { TOOL_LABEL, type InventoryRequest, type ToolType } from '@/types/database';
+import { TOOL_LABEL, stockToolName, type InventoryRequest, type ToolType } from '@/types/database';
 import { FACTORIES, FCHIP } from '@/lib/factories';
 import { useVisibleInterval } from '@/lib/useVisibleInterval';
 
@@ -88,7 +88,7 @@ export function RequestBanner({ factory, onOpen }: { factory: string; onOpen: ()
   const arriving = needs.find(x => x.requester_factory === factory && x.status === 'IN_TRANSIT');
   const more = needs.length > 1 ? ` · ${needs.length - 1} more` : '';
   const title = arriving ? `Did you receive tools from ${arriving.source_factory}?` : `${needs.length} tool request${needs.length === 1 ? '' : 's'} need${needs.length === 1 ? 's' : ''} your action`;
-  const sub = arriving ? `${arriving.qty_sent} × ${TOOL_LABEL[arriving.tool_type as ToolType] ?? arriving.tool_type} · size ${arriving.roller_size}${more}. Tap to answer.` : `Tap to open Requests.`;
+  const sub = arriving ? `${arriving.qty_sent} × ${stockToolName(arriving.tool_type)} · size ${arriving.roller_size}${more}. Tap to answer.` : `Tap to open Requests.`;
   return (<button onClick={onOpen} className="w-full mb-4 rounded-2xl border-2 border-amber-400 bg-amber-400/20 px-4 py-4 text-left flex items-center gap-3">
     <span className="text-3xl">{arriving ? '📦' : '📨'}</span>
     <span className="flex-1"><b className="block text-xl">{title}</b><span className="text-slate-300 text-sm">{sub}</span></span>

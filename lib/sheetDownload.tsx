@@ -42,18 +42,19 @@ const toCsv = (lines: Line[]): string => {
 const save = (text: string, name: string) => { const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([text], { type: 'text/csv;charset=utf-8' })); a.download = name; a.click(); };
 
 export function SheetDownload({ factory, from, to }: { factory: string; from: string; to: string }) {
-  const [busy, setBusy] = useState(false); const [msg, setMsg] = useState('');
+  const [busy, setBusy] = useState(false); const [msg, setMsg] = useState(''); const [err, setErr] = useState('');
+  const fault = (m: string) => { setMsg(''); setErr(m); };   // a failed download stays in red until the next try
   const flash = (m: string) => { setMsg(m); setTimeout(() => setMsg(''), 6000); };
 
   const month = async () => {
-    setBusy(true); setMsg('Preparing…');
+    setBusy(true); setErr(''); setMsg('Preparing…');
     const r = await fetchRange(factory, from, to); setBusy(false);
-    if (r.error) { flash(`Could not download: ${r.error}`); return; }
+    if (r.error) { fault(`Could not download: ${r.error}`); return; }
     if (!r.lines.length) { flash('No shift sheet lines in this month.'); return; }
     save(toCsv(r.lines), `shift-sheet_${factory}_${from.slice(0, 7)}.csv`); flash(`Downloaded ${r.lines.length} lines.`);
   };
   const all = async () => {
-    setBusy(true); setMsg('Finding the first month with data…');
+    setBusy(true); setErr(''); setMsg('Finding the first month with data…');
     const first = await supabase.from('shift_entries_live').select('work_date').eq('factory_id', factory).order('work_date', { ascending: true }).limit(1).maybeSingle();
     const start = (first.data as unknown as { work_date: string } | null)?.work_date;
     if (!start) { setBusy(false); flash('No shift sheet lines yet.'); return; }
@@ -62,7 +63,7 @@ export function SheetDownload({ factory, from, to }: { factory: string; from: st
     while (m < end) {
       n++; setMsg(`Preparing… month ${Math.min(n, total)} of about ${total}`);
       const r = await fetchRange(factory, m, nextMonth(m));
-      if (r.error) { setBusy(false); flash(`Could not download: ${r.error}`); return; }
+      if (r.error) { setBusy(false); fault(`Could not download: ${r.error}`); return; }
       lines = lines.concat(r.lines); m = nextMonth(m);
     }
     setBusy(false);
@@ -74,5 +75,6 @@ export function SheetDownload({ factory, from, to }: { factory: string; from: st
     <button className={btn} disabled={busy} onClick={month}>⬇ Download this month</button>
     <button className={btn} disabled={busy} onClick={all}>⬇ Download all months</button>
     {msg && <span className="text-sm font-semibold text-amber-300">{msg}</span>}
+    {err && <span role="alert" className="text-sm font-semibold text-red-400">⚠ {err}</span>}
   </div>);
 }
