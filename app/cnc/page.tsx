@@ -5,7 +5,7 @@ import { Guard } from '@/lib/auth';
 import { useOrders, dt, gkey, DSEL, chime } from '@/lib/useOrders';
 import { FACTORIES, FCHIP, mname as mcode, rollerLabel, sizeParty } from '@/lib/factories';
 import { URGENCY, cmpQueue } from '@/lib/urgency';
-import { TOOL_LABEL, type OrderFull, type DeliveryFull, type CheckItem } from '@/types/database';
+import { TOOL_LABEL, type OrderFull, type DeliveryFull, type CheckItem, type LatheLog, type ToolType } from '@/types/database';
 import { CncHistory } from '@/lib/cncHistory';
 import { CheckLines } from '@/lib/checkView';
 import { blankCheck, checkDone, orderTool, itemBad } from '@/lib/dimCheck';
@@ -36,6 +36,11 @@ function Ring({ pct }: { pct: number | null }) {
 
 function Cnc() {
   const { orders, deliveries, reload } = useOrders();
+  // Last job finished on the lathe (any factory: there is one lathe). Re-read whenever a new batch is made.
+  const [last, setLast] = useState<LatheLog | null>(null);
+  const lastMade = deliveries.reduce((m, d) => (d.made_at > m ? d.made_at : m), '');   // plain text, safe in the effect list
+  useEffect(() => { supabase.from('lathe_activity_logs').select('*').eq('action', 'COMPLETED').order('ended_at', { ascending: false }).limit(1)
+    .then(({ data }) => setLast((data?.[0] as LatheLog | undefined) ?? null)); }, [lastMade]);
   const [tab, setTab] = useState<'queue' | 'ready' | 'history'>('queue');
   const [fsel, setFsel] = useState<string | null>(null);
   const [win, setWin] = useState<'today' | 'week' | 'month'>('month');
@@ -155,6 +160,15 @@ function Cnc() {
 
   return (<div ref={fe.root} onChange={fe.onFieldChange} className="p-4 max-w-7xl mx-auto space-y-4">
     <h1 className="text-2xl font-bold">CNC {running && <span className="ml-2 text-base bg-blue-600 text-white rounded-lg px-3 py-1">Lathe busy</span>}</h1>
+    {last && (() => { const lo = orders.find(x => x.id === last.order_id); const mins = Math.round(last.duration_seconds / 60);
+      return <div className="rounded-xl border-2 border-slate-700 bg-slate-900 px-4 py-2 flex items-center gap-x-3 gap-y-1 flex-wrap">
+        <span className="text-slate-400 font-semibold">Last job done on lathe</span>
+        <FTag f={last.factory_id}/>
+        <span className="text-lg font-extrabold">{last.roller_size ?? '—'}</span>
+        <span className="text-lg font-bold">{lo ? nm(lo) : TOOL_LABEL[(last.tool_type ?? 'OTHER') as ToolType] ?? last.tool_type}</span>
+        {last.qty_made != null && <span className="font-semibold">{last.qty_made} pcs</span>}
+        <span className="ml-auto text-slate-300">Finished {when(last.ended_at)}{mins > 0 ? ` · took ${mins >= 60 ? `${Math.floor(mins / 60)} h ${mins % 60} min` : `${mins} min`}` : ''}</span>
+      </div>; })()}
     <Err errs={fe.errs} k="info:log" tone="info"/>
     <div className="grid grid-cols-3 gap-2">{([['queue', `To make (${waiting.length + (running ? 1 : 0)})`], ['ready', `Ready · at my place (${deliveries.filter(d => d.status === 'READY').length})`], ['history', 'History']] as const).map(([t, l]) =>
       <button key={t} onClick={() => setTab(t)} className={`h-16 rounded-xl border-2 text-lg font-bold ${tab === t ? 'border-amber-400 bg-amber-400/20' : 'border-slate-700 bg-slate-900'}`}>{l}</button>)}</div>
