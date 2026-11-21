@@ -17,13 +17,17 @@ const tn = stockToolName;
 const btnSm = (on: boolean) => `min-h-10 px-3 rounded-lg border-2 text-sm font-bold whitespace-nowrap ${on ? 'border-amber-400 bg-amber-400/20' : 'border-slate-700 bg-slate-900'}`;   // row buttons in the stock table
 const cell = 'px-3 py-2 align-middle';
 const detOf = (k: ToolingMaster) => k.tool_type === 'DIE_TOP' ? (k.batta_code ? `Batta ${k.batta_code}` : '')
-  : k.tool_type === 'BOTTOM' ? `OD ${k.od_dim ?? '—'} × L ${k.length_dim ?? '—'} · OD ${k.od2_dim ?? '—'} · Step ${k.step_depth_dim ?? '—'}`
+  : k.tool_type === 'BOTTOM' || k.tool_type === 'FACING_PUNCH' ? `OD ${k.od_dim ?? '—'}`
   : k.od_dim != null || k.length_dim != null ? `OD ${k.od_dim ?? '—'} × L ${k.length_dim ?? '—'}` : '';
 const Tag = ({ s }: { s: string }) => <span className={`rounded-lg px-2 py-0.5 text-sm font-extrabold text-white ${s === 'HARD' ? 'bg-green-600' : 'bg-slate-600'}`}>{s}</span>;
 const num = (v: string) => Math.round(+v.replace(/,/g, '') || 0);
 export const istDate = () => new Date(Date.now() + 330 * 60000).toISOString().slice(0, 10);
 export const istHour = () => new Date(Date.now() + 330 * 60000).getUTCHours();
 const tm = (t: string) => new Date(t).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata', day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit' });
+// Stock "added": received from a CNC order, added by hand (Add stock), or received from another factory
+type Added = { roller_id: string; tool_type: string; dim_key: string; kind: string; reason: string | null; qty: number; created_at: string };
+const ADD_KINDS = ['RECEIPT', 'OPENING', 'TRANSFER_IN'];
+const addedHow = (a: Added) => a.kind === 'RECEIPT' ? 'Received from CNC order' : a.kind === 'OPENING' ? 'Added by hand' : `Received ${a.reason ? a.reason.toLowerCase() : 'from another factory'}`;
 
 // ---- Move stock to a location ----
 function Mover({ line, locs, def, label, onDone, setMsg }: { line: InventoryStock; locs: InventoryLocation[]; def?: string; label: string; onDone: () => void; setMsg: (m: string) => void }) {
@@ -87,7 +91,7 @@ const typeOf = (row: string) => row.split('#')[0];
 const cleanName = (v: string) => v.trim().replace(/\s+/g, ' ');
 // Size boxes per tool: the same fields the database function dim_label uses to build the stock label
 const dimFields = (tt: string): [keyof DimVals, string][] => tt === 'DIE_TOP' ? [['batta', 'Batta code']]
-  : tt === 'BOTTOM' ? [['od', 'OD'], ['len', 'Length'], ['od2', 'OD 2'], ['step', 'Step depth']]
+  : tt === 'BOTTOM' || tt === 'FACING_PUNCH' ? [['od', 'OD']]   // OD only (migration 43)
   : tt in STOCK_ONLY_LABEL ? [] : [['od', 'OD'], ['len', 'Length']];
 const pcs = (v: string) => { const x = v.replace(/,/g, '').trim(); return x === '' ? 0 : /^\d+$/.test(x) ? +x : NaN; };   // blank = 0, NaN = not a whole number
 const smBox = 'h-11 rounded-lg bg-slate-900 border-2 border-slate-700 px-2 text-lg w-full';
@@ -458,9 +462,10 @@ export function InventoryTab({ factory, startView }: { factory: string; startVie
     const [lastRun, setLastRun] = useState<Record<string, InventoryTakedown>>({});
   const [reqs, setReqs] = useState<InventoryRequest[]>([]); const [master, setMaster] = useState<ToolingMaster[]>([]);
   const [origin, setOrigin] = useState<Record<string, { kind: string; reason: string | null; created_at: string }>>({});
+  const [added, setAdded] = useState<Added[]>([]);   // newest first
   const load = useCallback(async () => {
     if (!factory) return;
-    const [s, r, l, m, g, td, rq, om, hm] = await Promise.all([
+    const [s, r, l, m, g, td, rq, om, hm, ad] = await Promise.all([
       supabase.from('inventory_stock').select('*').eq('factory_id', factory),
       supabase.from('roller_master').select('*').eq('factory_id', factory),
       supabase.from('inventory_locations').select('*').eq('factory_id', factory).order('name'),
@@ -469,7 +474,9 @@ export function InventoryTab({ factory, startView }: { factory: string; startVie
       supabase.from('inventory_takedowns').select('*').eq('factory_id', factory).order('taken_down_on', { ascending: false }).order('created_at', { ascending: false }).limit(300),
       supabase.from('inventory_requests').select('*').or(`source_factory.eq.${factory},requester_factory.eq.${factory}`).order('requested_at', { ascending: false }).limit(100),
       supabase.from('inventory_moves').select('roller_id, tool_type, state, kind, reason, created_at').eq('factory_id', factory).is('location_id', null).gt('qty', 0).order('created_at', { ascending: false }).limit(200),
-      supabase.from('header_machines').select('*').eq('factory_id', factory)]);
+      supabase.from('header_machines').select('*').eq('factory_id', factory),
+      supabase.from('inventory_moves').select('roller_id, tool_type, dim_key, kind, reason, qty, created_at').eq('factory_id', factory).in('kind', ADD_KINDS).gt('qty', 0).order('created_at', { ascending: false }).limit(2000)]);
+    setAdded((ad.data ?? []) as unknown as Added[]);
     setStock((s.data ?? []) as unknown as InventoryStock[]); setRolls((r.data ?? []) as unknown as RollerMaster[]); setLocs((l.data ?? []) as unknown as InventoryLocation[]);
     const ll: Record<string, string> = {};
     ((m.data ?? []) as unknown as { roller_id: string; location_id: string }[]).forEach(x => { if (!ll[x.roller_id]) ll[x.roller_id] = x.location_id; });
@@ -493,6 +500,9 @@ export function InventoryTab({ factory, startView }: { factory: string; startVie
 
   const sizeOf = new Map(rolls.map(r => [r.id, sizeParty(r)])); /* "size · party" everywhere on this tab */ const act = locs.filter(l => l.active); const locName = new Map(locs.map(l => [l.id, l.name])); const runOn = (id: string) => heads.filter(h => h.current_roller_id === id).map(h => mname(h.id));
   const unplaced = stock.filter(x => !x.location_id);
+  const lastAdd = new Map<string, Added>(); added.forEach(a => { const k = `${a.roller_id}|${a.tool_type}|${a.dim_key}`; if (!lastAdd.has(k)) lastAdd.set(k, a); });   // per tool + size
+  const lastAddRoll = new Map<string, Added>(); added.forEach(a => { if (!lastAddRoll.has(a.roller_id)) lastAddRoll.set(a.roller_id, a); });
+  const newest = added[0];
   const key = (x: InventoryStock) => `${x.roller_id}|${x.tool_type}|${x.state}|${x.location_id ?? ''}|${x.dim_key}`;
   const soft = stock.filter(x => x.state === 'SOFT').reduce((a, x) => a + x.qty, 0), hard = stock.filter(x => x.state === 'HARD').reduce((a, x) => a + x.qty, 0);
   const s = q.trim().toLowerCase();
@@ -516,6 +526,14 @@ export function InventoryTab({ factory, startView }: { factory: string; startVie
     {view === 'locs' && <Locs factory={factory} locs={act} onDone={done} setMsg={setMsg}/>}
     {view === 'hist' && <History factory={factory} sizeOf={sizeOf} locName={locName}/>}
     {view === 'stock' && <>
+      {newest && <div className="rounded-xl border-2 border-slate-700 bg-slate-900 px-4 py-3 flex items-center gap-x-3 gap-y-1 flex-wrap">
+        <span className="text-slate-400 font-semibold">Last added to stock</span>
+        <span className="text-xl font-extrabold">{rollerLabel(factory, sizeOf.get(newest.roller_id) ?? '—')}</span>
+        <span className="text-lg font-bold">{tn(newest.tool_type)}</span>
+        {newest.dim_key && <span className="text-slate-300">{newest.dim_key}</span>}
+        <span className="font-semibold">{newest.qty} pcs</span>
+        <span className={`rounded-lg px-2 py-0.5 text-sm font-bold ${newest.kind === 'RECEIPT' ? 'bg-sky-700 text-white' : newest.kind === 'OPENING' ? 'bg-slate-600 text-white' : 'bg-violet-700 text-white'}`}>{addedHow(newest)}</span>
+        <span className="ml-auto text-slate-300">{tm(newest.created_at)}</span></div>}
       <div className="rounded-xl bg-slate-900 border border-slate-800 p-4 flex flex-wrap gap-x-8 gap-y-1 text-xl">
         <span><b className="text-3xl text-amber-300">{(soft + hard).toLocaleString('en-IN')}</b> pcs in stock</span><span className="text-slate-300">Soft {soft.toLocaleString('en-IN')}</span><span className="text-slate-300">Hard {hard.toLocaleString('en-IN')}</span></div>
       {unplaced.length > 0 && <section className="rounded-2xl border-2 border-amber-400 bg-slate-900 p-4 space-y-3">
@@ -531,22 +549,23 @@ export function InventoryTab({ factory, startView }: { factory: string; startVie
       <div className="space-y-2">{groups.map(g => { const isOpen = !!open[g.id]; const gs = g.items.filter(x => x.state === 'SOFT').reduce((a, x) => a + x.qty, 0), gh = g.items.filter(x => x.state === 'HARD').reduce((a, x) => a + x.qty, 0);
         return (<div key={g.id} className="rounded-lg bg-slate-800">
           <button onClick={() => setOpen({ ...open, [g.id]: !isOpen })} aria-expanded={isOpen} className="w-full min-h-16 px-3 py-2 flex items-center gap-3 text-left">
-                        <span className="text-xl font-extrabold">{rollerLabel(factory, g.size)}</span><span className="ml-auto text-sm text-slate-300">{g.items.length ? `Soft ${gs} · Hard ${gh}` : 'No stock'}</span><span>{isOpen ? '▲' : '▼'}</span></button>
+                        <span className="text-xl font-extrabold">{rollerLabel(factory, g.size)}</span>{lastAddRoll.get(g.id) && <span className="text-sm text-slate-400">Last added {tm(lastAddRoll.get(g.id)!.created_at)}</span>}<span className="ml-auto text-sm text-slate-300">{g.items.length ? `Soft ${gs} · Hard ${gh}` : 'No stock'}</span><span>{isOpen ? '▲' : '▼'}</span></button>
           {isOpen && <div className="px-3 pb-3 space-y-2">{lastRun[g.id] && <RunNote r={lastRun[g.id]}/>}
             {g.items.length > 0 && <div className="overflow-x-auto rounded-xl border border-slate-700 bg-slate-900"><table className="w-full text-left">
-              <thead><tr className="bg-slate-800 text-sm text-slate-400"><th className={cell + ' font-semibold'}>Tool</th><th className={cell + ' font-semibold'}>Size</th><th className={cell + ' font-semibold'}>Condition</th><th className={cell + ' font-semibold'}>Location</th><th className={cell + ' font-semibold text-right'}>Pcs</th><th className={cell + ' font-semibold text-right'}>Actions</th></tr></thead>
+              <thead><tr className="bg-slate-800 text-sm text-slate-400"><th className={cell + ' font-semibold'}>Tool</th><th className={cell + ' font-semibold'}>Size</th><th className={cell + ' font-semibold'}>Condition</th><th className={cell + ' font-semibold'}>Location</th><th className={cell + ' font-semibold'}>Last added</th><th className={cell + ' font-semibold text-right'}>Pcs</th><th className={cell + ' font-semibold text-right'}>Actions</th></tr></thead>
               <tbody>{g.items.map((x, i) => { const k = key(x); const first = i === 0 || g.items[i - 1].tool_type !== x.tool_type; const sel = (t: 'move' | 'harden' | 'out') => setOp(op?.k === k && op.t === t ? null : { k, t }); const isOp = op?.k === k;
                 return (<Fragment key={k}><tr className={`border-t ${first ? 'border-slate-700' : 'border-slate-800'} ${isOp ? 'bg-slate-800' : ''}`}>
                   <td className={cell + ' font-bold whitespace-nowrap'}><span className={first ? '' : 'sr-only'}>{tn(x.tool_type)}</span></td>
                   <td className={cell + ' text-slate-300'}>{x.dim_key || dimMap[`${x.roller_id}|${x.tool_type}`] || '—'}</td>
                   <td className={cell}><Tag s={x.state}/></td>
                   <td className={cell + (x.location_id ? ' text-slate-300' : ' text-amber-300 font-semibold')}>{x.location_id ? locName.get(x.location_id) ?? 'Location' : 'Not placed'}</td>
+                  <td className={cell + ' text-sm text-slate-300 whitespace-nowrap'}>{(() => { const a = lastAdd.get(`${x.roller_id}|${x.tool_type}|${x.dim_key}`); return a ? <>{tm(a.created_at)}<span className="block text-xs text-slate-500">{a.kind === 'RECEIPT' ? 'CNC order' : a.kind === 'OPENING' ? 'By hand' : (a.reason ?? 'Other factory')}</span></> : '—'; })()}</td>
                   <td className={cell + ' text-right text-xl font-extrabold'}>{x.qty}</td>
                   <td className={cell}><div className="flex gap-1.5 justify-end">
                     {x.state === 'SOFT' && <button className={btnSm(isOp && op.t === 'harden')} onClick={() => sel('harden')}>Mark as Heat Treated</button>}
                     <button className={btnSm(isOp && op.t === 'out')} onClick={() => sel('out')}>Take out</button>
                     {x.location_id && <button className={btnSm(isOp && op.t === 'move')} onClick={() => sel('move')}>Move</button>}</div></td></tr>
-                  {isOp && <tr className="bg-slate-800"><td colSpan={6} className="px-3 pb-3 pt-1">
+                  {isOp && <tr className="bg-slate-800"><td colSpan={7} className="px-3 pb-3 pt-1">
                     {op.t === 'move' ? <Mover line={x} locs={act} label="Move" onDone={done} setMsg={setMsg}/> : <ActionForm line={x} type={op.t} onDone={done} setMsg={setMsg}/>}</td></tr>}
                 </Fragment>); })}</tbody></table></div>}</div>}
         </div>); })}

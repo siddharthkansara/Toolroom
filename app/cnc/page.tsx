@@ -14,8 +14,7 @@ import { Err, enterTo, useFormErrors } from '@/lib/formErrors';
 const nm = (o: OrderFull) => (o.tooling ? TOOL_LABEL[o.tooling.tool_type] : o.custom_tool_name || 'Other tool');
 const det = (o: OrderFull) => { const k = orderTool(o); if (!k) return o.custom_dimensions ?? '';
   return k.tool_type === 'DIE_TOP' ? (k.batta_code ? `Batta ${k.batta_code}` : '')
-    : k.tool_type === 'BOTTOM' ? `OD ${k.od_dim ?? '—'} × L ${k.length_dim ?? '—'} · OD ${k.od2_dim ?? '—'} · Step ${k.step_depth_dim ?? '—'}`
-    : k.tool_type === 'FACING_PUNCH' ? `OD ${k.od_dim ?? '—'} × L ${k.length_dim ?? '—'}` : ''; };
+    : k.tool_type === 'BOTTOM' || k.tool_type === 'FACING_PUNCH' ? `OD ${k.od_dim ?? '—'}` : ''; };
 const rem = (o: OrderFull) => Math.max(0, o.quantity - (o.qty_made ?? 0));
 const dayKey = (d: string) => new Date(d).toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' });
 const when = (d: string) => { const n = Date.now(); const k = dayKey(d);

@@ -1,9 +1,10 @@
 'use client';
 import { Fragment, useEffect, useRef, useState } from 'react';
-import { FACTORIES, FCHIP, rollerLabel, sizeParty } from '@/lib/factories';
+import { FACTORIES, FCHIP, rollerLabel, sizeParty, mname } from '@/lib/factories';
+import { supabase } from '@/lib/supabase';
 import { URGENCY, cmpQueue } from '@/lib/urgency';
 import { dt } from '@/lib/useOrders';
-import { TOOL_LABEL, type OrderFull, type DeliveryFull } from '@/types/database';
+import { TOOL_LABEL, type OrderFull, type DeliveryFull, type LatheLog, type ToolType } from '@/types/database';
 
 // Owner dashboard, "Today": what is happening right now at each factory.
 // Ordered / made / pending are in pieces. Same rules as the old Today's job cards:
@@ -19,6 +20,7 @@ const ago = (x: string) => {
   const m = Math.max(0, Math.floor((Date.now() - +new Date(x)) / 60000));
   return m < 60 ? `${m} min` : m < 1440 ? `${Math.floor(m / 60)} h ${m % 60} min` : `${Math.floor(m / 1440)} d ${Math.floor((m % 1440) / 60)} h`;
 };
+const mins = (secs: number) => { const m = Math.round(secs / 60); return m < 60 ? `${m} min` : `${Math.floor(m / 60)} h ${m % 60} min`; };
 const dayLabel = (day: string, today: string) => {
   const n = Math.round((Date.parse(today + 'T00:00:00Z') - Date.parse(day + 'T00:00:00Z')) / 86400000);
   const d = new Date(day + 'T00:00:00Z').toLocaleDateString('en-IN', { timeZone: 'UTC', weekday: 'short', day: 'numeric', month: 'short' });
@@ -65,6 +67,13 @@ export function TodayView({ orders, batches, fsel }: { orders: OrderFull[]; batc
 
   const onLathe = orders.filter(o => o.status === 'ON_LATHE' && facs.includes(o.factory_id));
   const rush = orders.filter(o => o.status === 'QUEUED' && o.priority !== 'BUFFER_NEXT_SHIFT' && facs.includes(o.factory_id)).sort(cmpQueue);
+  // Last 7 jobs finished on the lathe (re-read whenever a new batch is made)
+  const [jobs, setJobs] = useState<LatheLog[]>([]);
+  const lastMade = batches.reduce((m, d) => (d.made_at > m ? d.made_at : m), '');   // plain text, safe in the effect list
+  const facKey = facs.join(',');
+  useEffect(() => { supabase.from('lathe_activity_logs').select('*').eq('action', 'COMPLETED').in('factory_id', facKey.split(',')).order('ended_at', { ascending: false }).limit(7)
+    .then(({ data }) => setJobs((data ?? []) as unknown as LatheLog[])); }, [facKey, lastMade]);
+  const ordOf = new Map(orders.map(o => [o.id, o]));
   const atCnc = batches.filter(d => d.status === 'READY' && d.ord && facs.includes(d.factory_id)).sort((a, b) => +new Date(a.made_at) - +new Date(b.made_at));
 
   return (<div className="space-y-6">
@@ -112,7 +121,14 @@ export function TodayView({ orders, batches, fsel }: { orders: OrderFull[]; batc
       <div className="bg-slate-900 rounded-2xl p-6 border border-slate-800">
         <h3 className="text-xl font-bold mb-1">On the lathe now</h3>
         {!onLathe.length && <p className="text-slate-400 py-3">The lathe is idle.</p>}
-        {onLathe.map(o => <Row key={o.id} lead={<Tag f={o.factory_id}/>} title={`${rollerLabel(o.factory_id, sizeParty(o.roller))} · ${tname(o)} · ${n0(rem(o))} pcs`} sub={o.started_lathe_at ? `Running for ${ago(o.started_lathe_at)}` : 'Started'}/>)}</div>
+        {onLathe.map(o => <Row key={o.id} lead={<Tag f={o.factory_id}/>} title={`${rollerLabel(o.factory_id, sizeParty(o.roller))} · ${tname(o)} · ${n0(rem(o))} pcs`} sub={o.started_lathe_at ? `Running for ${ago(o.started_lathe_at)}` : 'Started'}/>)}
+        <h3 className="text-lg font-bold mt-5 mb-1">Last {jobs.length || 7} jobs done on the lathe</h3>
+        {!jobs.length && <p className="text-slate-400 py-2">No finished jobs yet.</p>}
+        {jobs.map(j => { const o = ordOf.get(j.order_id); const tool = o ? tname(o) : TOOL_LABEL[(j.tool_type ?? 'OTHER') as ToolType] ?? j.tool_type ?? 'Tool';
+          return <div key={j.id} className="flex items-start gap-3 py-2.5 border-t border-slate-800"><Tag f={j.factory_id}/><div className="flex-1 min-w-0">
+            <div className="font-bold">{j.roller_size ?? '—'} · <span className="text-amber-300">{tool}</span> · {n0(j.qty_made ?? 0)} pcs</div>
+            <div className="text-sm text-slate-400">Finished {dt(j.ended_at)} · started {dt(j.started_at)} · took {mins(j.duration_seconds)}</div>
+            {o && <div className="text-sm text-slate-400">Header {mname(o.machine_id)} · ordered {n0(o.quantity)} pcs on {dt(o.created_at)}{o.status !== 'CLOSED' && (o.qty_made ?? 0) < o.quantity ? ` · ${n0(o.quantity - (o.qty_made ?? 0))} still to make` : ''}</div>}</div></div>; })}</div>
       <div className="bg-slate-900 rounded-2xl p-6 border border-slate-800">
         <h3 className="text-xl font-bold mb-1">Needs attention</h3>
         {!rush.length && !atCnc.length && <p className="text-slate-400 py-3">Nothing needs attention right now.</p>}

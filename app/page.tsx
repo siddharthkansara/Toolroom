@@ -22,8 +22,7 @@ const STD: ToolType[] = ['DIE_TOP', 'BOTTOM', 'FACING_PUNCH', 'SHORT_PIN'];
 // Detail boxes per tool: each inner array is one line
 const LAYOUT: Record<string, [keyof Rec, string][][]> = {
   DIE_TOP: [[['code', 'Batta no.']]],
-  BOTTOM: [[['od', 'OD'], ['len', 'L (length)']], [['od2', 'OD (2nd)']], [['step', 'Step']]],
-  FACING_PUNCH: [[['od', 'OD'], ['len', 'L (length)']]], SHORT_PIN: [] };
+  BOTTOM: [[['od', 'OD']]], FACING_PUNCH: [[['od', 'OD']]], SHORT_PIN: [] };   // Bottom and Forging Punch: OD only (migration 43)
 const PRIO_TXT: Record<Priority, [string, string]> = { BUFFER_NEXT_SHIFT: ['🟡 Normal', 'Next morning, buffer stock'], URGENT: ['🟠 Urgent', 'Needed today'], URGENT_MACHINE_DOWN: ['🔴 Breakdown', 'Machine / line is down'] };
 const PRIO_ON: Record<Priority, string> = { BUFFER_NEXT_SHIFT: 'border-slate-400 bg-slate-500/20', URGENT: 'border-amber-500 bg-amber-400/20', URGENT_MACHINE_DOWN: 'border-red-500 bg-red-600/30' };
 const ST: Record<string, string> = { QUEUED: 'Queued', ON_LATHE: 'On lathe', IN_TRANSIT: 'Ready to dispatch', RECEIVED: 'Received', HEAT_TREAT: 'Heat treat', READY: 'Ready', CLOSED: 'Closed' };
@@ -43,8 +42,7 @@ const dims = (o: OrderFull) => { const k = orderTool(o); return k ? det(k) : o.c
 const stOf = (o: OrderFull) => o.status === 'CLOSED' ? ((o.qty_made ?? 0) >= o.quantity ? 'Completed' : `Closed (${o.qty_made ?? 0} of ${o.quantity})`)
   : o.status === 'QUEUED' && (o.qty_made ?? 0) > 0 ? 'Partly made' : ST[o.status];
 const det = (k: ToolingMaster) => k.tool_type === 'DIE_TOP' ? (k.batta_code ? `Batta ${k.batta_code}` : '')
-  : k.tool_type === 'BOTTOM' ? `OD ${k.od_dim ?? '—'} × L ${k.length_dim ?? '—'} · OD ${k.od2_dim ?? '—'} · Step ${k.step_depth_dim ?? '—'}`
-  : k.tool_type === 'FACING_PUNCH' ? `OD ${k.od_dim ?? '—'} × L ${k.length_dim ?? '—'}` : '';
+  : k.tool_type === 'BOTTOM' || k.tool_type === 'FACING_PUNCH' ? `OD ${k.od_dim ?? '—'}` : '';
 const Stepper = ({ n, set }: { n: number; set: (v: number) => void }) => (<div className="flex items-center gap-2">
   <button aria-label="Less" onClick={() => set(n <= 1 ? 0 : n - 1)} className="w-16 rounded-xl bg-slate-800"><Minus className="mx-auto"/></button>
   <span className="text-4xl font-bold w-14 text-center">{n}</span>
@@ -195,7 +193,7 @@ const periodLabel = per === 'y' ? `FY ${fy}-${String(fy + 1).slice(2)}` : per ==
     const { data: cur } = await supabase.from('tooling_master').select('id, tool_type').eq('roller_id', id!);   // fresh, not the page's cached list
     for (const t of STD) {   // every tool gets a row (Forging Pin has no details but must exist to be ordered)
       const f = tf[t];
-      const row = { batta_code: f?.code || null, od_dim: num(f?.od), length_dim: num(f?.len), od2_dim: num(f?.od2), step_depth_dim: num(f?.step) };
+      const row = { batta_code: f?.code || null, od_dim: num(f?.od), length_dim: null, od2_dim: null, step_depth_dim: null };   // only OD is kept now
       const ex = cur?.find(x => x.tool_type === t);
       if (ex) await supabase.from('tooling_master').update(row).eq('id', ex.id);
       else await supabase.from('tooling_master').insert({ roller_id: id!, tool_type: t, ...row });

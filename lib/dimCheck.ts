@@ -12,9 +12,7 @@ export function checkLines(o: OrderFull): { k: string; spec: string }[] {
   const t = orderTool(o);
   if (!t) return [{ k: 'Dimensions', spec: o.custom_dimensions ?? '' }];
   if (t.tool_type === 'DIE_TOP') return [{ k: 'Batta', spec: t.batta_code ?? '' }];
-  if (t.tool_type === 'BOTTOM') return [
-    { k: 'OD', spec: f(t.od_dim) }, { k: 'Length', spec: f(t.length_dim) },
-    { k: 'OD 2', spec: f(t.od2_dim) }, { k: 'Step depth', spec: f(t.step_depth_dim) }];
+  if (t.tool_type === 'BOTTOM' || t.tool_type === 'FACING_PUNCH') return [{ k: 'OD', spec: f(t.od_dim) }];   // OD only (migration 43)
   if (t.od_dim != null || t.length_dim != null) return [{ k: 'OD', spec: f(t.od_dim) }, { k: 'Length', spec: f(t.length_dim) }];
   return [{ k: 'Dimensions', spec: '' }];
 }

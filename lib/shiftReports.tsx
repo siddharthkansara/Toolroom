@@ -12,6 +12,7 @@ const n0 = (n: number) => Math.round(n).toLocaleString('en-IN');
 const rpcData = <T,>(fn: string, args: object) => (supabase.rpc as unknown as (f: string, a: object) => Promise<{ data: T | null; error: { message: string } | null }>).call(supabase, fn, args);
 const Fac = ({ f }: { f: string }) => <span className={`${FCHIP[f] ?? 'bg-slate-600'} text-white rounded-lg px-2 py-0.5 text-sm font-extrabold`}>{f}</span>;
 const th = 'px-3 py-2 whitespace-nowrap';
+const nextDay = (d: string) => { const x = new Date(d + 'T00:00:00'); x.setDate(x.getDate() + 1); return ymd(x); };
 
 type ShiftRow = { factory_id: string; work_date: string; shift: 'DAY' | 'NIGHT'; rollers: number; lines: number; headers: number; not_running: number; completed: boolean };
 type HeadRow = { factory_id: string; machine_id: string; rollers: number; ran_shifts: number; idle_shifts: number; capacity: number | null };
@@ -25,6 +26,8 @@ export function ShiftReports({ rs, re, fsel, period }: { rs: Date; re: Date; fse
   const [tab, setTab] = useState<Tab>('shifts'); const [shifts, setShifts] = useState<ShiftRow[]>([]); const [heads, setHeads] = useState<HeadRow[]>([]);
   const [ops, setOps] = useState<OpRow[]>([]); const [sizes, setSizes] = useState<SizeRow[]>([]); const [partyOf, setPartyOf] = useState<Record<string, string>>({});   // roller id -> party name
   const [busy, setBusy] = useState(true); const [err, setErr] = useState(''); const [all, setAll] = useState(false); const [q, setQ] = useState(''); const [tf, setTf] = useState<string>(fsel || 'NIC'); const fac = fsel || tf;
+  const [tday, setTday] = useState('');   // Production table: '' = the whole dashboard period, else one work date
+  const today = ymd(new Date());
   useEffect(() => { (async () => {
     setBusy(true); setErr('');
     const a = { p_from: ymd(rs), p_to: ymd(re), p_factory: fsel || null };
@@ -90,6 +93,10 @@ export function ShiftReports({ rs, re, fsel, period }: { rs: Date; re: Date; fse
       <p className="text-xs text-slate-500">Tools used and rollers forged come from the same shift lines, so they match exactly. Rollers forged is the same figure for every tool of a size. Read a quarter or a year for the steadiest numbers.</p></div>}
     {(tab === 'table' || tab === 'util') && <div className="space-y-3">
       {!fsel && <div className="flex gap-2 flex-wrap">{FACTORIES.map(f => <button key={f} onClick={() => setTf(f)} className={`min-h-12 px-5 rounded-xl border-2 text-lg font-bold ${fac === f ? 'border-amber-400 bg-amber-400/20' : 'border-slate-700 bg-slate-900'}`}>{f}</button>)}</div>}
-      {tab === 'table' ? <ProductionTable factory={fac} from={ymd(rs)} to={ymd(re)}/> : <UtilGrid factory={fac} from={ymd(rs)} to={ymd(re)}/>}</div>}
+      {tab === 'table' && <div className="flex gap-2 flex-wrap items-end">
+        <button onClick={() => setTday('')} className={`min-h-12 px-5 rounded-xl border-2 text-lg font-bold ${!tday ? 'border-amber-400 bg-amber-400/20' : 'border-slate-700 bg-slate-900'}`}>Whole period · {period}</button>
+        <button onClick={() => setTday(today)} className={`min-h-12 px-5 rounded-xl border-2 text-lg font-bold ${tday === today ? 'border-amber-400 bg-amber-400/20' : 'border-slate-700 bg-slate-900'}`}>Today</button>
+        <label className="block"><span className="block text-sm font-semibold text-slate-300 mb-1">Or pick a day</span><input type="date" max={today} value={tday && tday !== today ? tday : ''} onChange={e => setTday(e.target.value)} className={`h-12 rounded-xl border-2 px-3 text-lg ${tday && tday !== today ? 'border-amber-400 bg-slate-800' : 'border-slate-700 bg-slate-900'}`}/></label></div>}
+      {tab === 'table' ? <ProductionTable factory={fac} from={tday || ymd(rs)} to={tday ? nextDay(tday) : ymd(re)}/> : <UtilGrid factory={fac} from={ymd(rs)} to={ymd(re)}/>}</div>}
   </section>);
 }
