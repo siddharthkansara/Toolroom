@@ -13,8 +13,8 @@ import { checkText, checkResult } from '@/lib/dimCheck';
 //            Tap a line to open the whole order: every tool type ordered with it, what is made and what is left.
 //  Monthly summary: Factory + tool type table for a month, with a CSV download (same as the owner dashboard).
 
-type Win = 'today' | 'yesterday' | '7' | 'day';
-const WINS: [Win, string][] = [['today', 'Today'], ['yesterday', 'Yesterday'], ['7', 'Last 7 days']];
+type Win = 'today' | 'yesterday' | '7' | 'day' | 'month';
+const WINS: [Win, string][] = [['today', 'Today'], ['yesterday', 'Yesterday'], ['7', 'Last 7 days'], ['month', 'This month']];
 const COLS = ['DIE_TOP', 'BOTTOM', 'FACING_PUNCH', 'SHORT_PIN'] as const;
 type Col = (typeof COLS)[number];
 const LABEL: Record<Col, string> = { DIE_TOP: 'Die Top', BOTTOM: 'Bottom', FACING_PUNCH: 'Forging Punch', SHORT_PIN: 'Forging Pin' };
@@ -60,14 +60,16 @@ const saveCsv = (out: (string | number)[][], name: string) => {
 
 export function CncHistory({ fsel, sig }: { fsel: string | null; sig: number }) {
   const [sub, setSub] = useState<'activity' | 'summary'>('activity');
-  const [win, setWin] = useState<Win>('today'); const [pick, setPick] = useState(''); const [q, setQ] = useState(''); const [openId, setOpenId] = useState('');
+  const [win, setWin] = useState<Win>('today'); const [pick, setPick] = useState(''); const [aym, setAym] = useState(''); /* a past month picked for Activity ('' = this month) */ const [q, setQ] = useState(''); const [openId, setOpenId] = useState('');
   const [del, setDel] = useState<DeliveryFull[]>([]); const [sibs, setSibs] = useState<OrderFull[]>([]); const [allDel, setAllDel] = useState<DeliveryFull[]>([]);
   const [busy, setBusy] = useState(true); const [err, setErr] = useState(''); const [tick, setTick] = useState(0);
   const [ym, setYm] = useState(istDay(Date.now()).slice(0, 7)); const [sumDel, setSumDel] = useState<DeliveryFull[]>([]); const [sBusy, setSBusy] = useState(true); const [sErr, setSErr] = useState('');
   const facs: string[] = fsel ? [fsel] : [...FACTORIES];
 
   const t = istDay(Date.now());
-  const [fromD, toD] = win === 'today' ? [t, addDays(t, 1)] : win === 'yesterday' ? [addDays(t, -1), t] : win === '7' ? [addDays(t, -6), addDays(t, 1)] : [pick || t, addDays(pick || t, 1)];
+  const [fromD, toD] = win === 'today' ? [t, addDays(t, 1)] : win === 'yesterday' ? [addDays(t, -1), t] : win === '7' ? [addDays(t, -6), addDays(t, 1)]
+    : win === 'month' ? (aym && aym < t.slice(0, 7) ? [`${aym}-01`, `${addMonths(aym, 1)}-01`] : [`${t.slice(0, 7)}-01`, addDays(t, 1)])   // this month runs to today
+    : [pick || t, addDays(pick || t, 1)];
   const fromIso = startOf(fromD); const toIso = startOf(toD);
 
   // Activity data: the batches made in the window, the other tool types of those orders, and every batch of those orders
@@ -136,8 +138,11 @@ export function CncHistory({ fsel, sig }: { fsel: string | null; sig: number }) 
 
     {sub === 'activity' && <div className="space-y-3">
       <div className="flex gap-2 flex-wrap items-end">
-        {WINS.map(([w, l]) => <button key={w} onClick={() => setWin(w)} className={`px-5 h-12 rounded-lg ${win === w ? 'bg-amber-500 text-slate-950 font-bold' : 'bg-slate-800'}`}>{l}</button>)}
+        {WINS.map(([w, l]) => <button key={w} onClick={() => { setWin(w); if (w === 'month') setAym(''); }} className={`px-5 h-12 rounded-lg ${win === w && !(w === 'month' && aym) ? 'bg-amber-500 text-slate-950 font-bold' : 'bg-slate-800'}`}>{l}</button>)}
         <label className="block"><span className="block text-sm font-semibold text-slate-300 mb-1">Or pick one day</span><input type="date" max={t} value={pick} onChange={e => { setPick(e.target.value); setWin('day'); }} className={`h-12 rounded-lg border-2 px-3 text-lg ${win === 'day' ? 'border-amber-500 bg-slate-800' : 'border-slate-700 bg-slate-900'}`}/></label>
+        <label className="block"><span className="block text-sm font-semibold text-slate-300 mb-1">Or pick a past month</span><select value={win === 'month' ? aym : ''} onChange={e => { setAym(e.target.value); setWin('month'); }} className={`h-12 rounded-lg border-2 px-3 text-lg ${win === 'month' && aym ? 'border-amber-500 bg-slate-800' : 'border-slate-700 bg-slate-900'}`}>
+          <option value="" disabled>Choose month</option>
+          {Array.from({ length: 24 }, (_, i) => addMonths(t.slice(0, 7), -(i + 1))).map(m => <option key={m} value={m}>{fmt(`${m}-01`, { month: 'long', year: 'numeric' })}</option>)}</select></label>
         <button onClick={() => setTick(x => x + 1)} className="px-4 h-12 rounded-lg bg-slate-800" aria-label="Refresh">↻</button>
         <button onClick={activityCsv} disabled={!entries.length} className={btn}>⬇ Download</button></div>
       <label className="block"><span className="block text-sm font-semibold text-slate-300 mb-1">Search roller size or party</span><input className="h-12 rounded-xl bg-slate-900 border-2 border-slate-700 px-3 text-lg w-full" placeholder="Type roller size or party" value={q} onChange={e => setQ(e.target.value)}/></label>
